@@ -10,6 +10,7 @@
   "homepage": "https://github.com/KnightNiwrem/tg-scheduler-bot-convex#readme",
   "type": "module",
   "private": true,
+  "packageManager": "bun@1.4.4",
   "scripts": {
     "dev": "convex dev",
     "deploy": "convex deploy",
@@ -19,10 +20,9 @@
     "e2e:local": "bun scripts/e2e-local.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit -p convex && tsc --noEmit",
-    "lint": "biome lint .",
-    "format": "biome format --write .",
-    "check": "biome check .",
-    "check:fix": "biome check --write ."
+    "check": "biome check",
+    "check:fix": "biome check --write",
+    "validate": "bun run check && bun run typecheck && bun run test"
   },
   "dependencies": {
     "@convex-dev/crons": "^0.2.3",

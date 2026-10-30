@@ -148,7 +148,7 @@ error), and cancelling one-time schedules. The cron checks wait for real minute 
 run takes about three minutes. It overwrites the deployment's environment variables, so it refuses to run against non-local deployments.
 
 Other checks: `bun test` (protocol parsing), `bun run typecheck`, and `bun run check` (Biome lint and
-format; `bun run check:fix` applies fixes). CI runs all of these on every push and pull request.
+format; `bun run check:fix` applies fixes). `bun run validate` runs all three, and so does CI.
 
 ## Configuration
 
