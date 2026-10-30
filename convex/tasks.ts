@@ -55,12 +55,13 @@ export const cancel = internalMutation({
 
     if (task.kind === "once") {
       // A schedule that is being sent or has finished can no longer be stopped.
-      if (task.doc.status !== "pending") return { kind: "not_cancellable", status: task.doc.status };
+      if (task.doc.status !== "pending")
+        return { kind: "not_cancellable", status: task.doc.status };
       // The queued deliver run still fires, but its claim fails, so nothing is sent.
       await ctx.db.patch("schedules", task.doc._id, { status: "cancelled" });
     } else {
       if (task.doc.status !== "active") return { kind: "not_cancellable", status: task.doc.status };
-      await crons.delete(ctx, { id: task.doc.cronId! });
+      if (task.doc.cronId) await crons.delete(ctx, { id: task.doc.cronId });
       await ctx.db.patch("recurring", task.doc._id, { status: "cancelled" });
     }
     return { kind: "cancelled" };

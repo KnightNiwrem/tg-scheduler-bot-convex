@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      # Lint rules plus import sorting; formatting is checked separately below.
+      - name: Biome lint
+        run: bunx biome ci --formatter-enabled=false --error-on-warnings .
+      - name: Biome format
+        run: bunx biome format .
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Test
+        run: bun test

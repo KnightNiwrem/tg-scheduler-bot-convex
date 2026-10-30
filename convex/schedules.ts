@@ -1,5 +1,5 @@
-import { GrammyError } from "grammy";
 import { v } from "convex/values";
+import { GrammyError } from "grammy";
 import { internal } from "./_generated/api";
 import { internalAction, internalMutation } from "./_generated/server";
 import { formatDue } from "./protocol";
@@ -48,7 +48,7 @@ export const claim = internalMutation({
   args: { scheduleId: v.id("schedules") },
   handler: async (ctx, { scheduleId }) => {
     const schedule = await ctx.db.get("schedules", scheduleId);
-    if (!schedule || schedule.status !== "pending") return null;
+    if (schedule?.status !== "pending") return null;
     const attempts = schedule.attempts + 1;
     await ctx.db.patch("schedules", scheduleId, { status: "sending", attempts });
     return { clientId: schedule.clientId, taskId: schedule.taskId, attempts };

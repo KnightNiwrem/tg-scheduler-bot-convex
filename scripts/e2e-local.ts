@@ -12,20 +12,50 @@ import { $ } from "bun";
 
 const siteUrl = process.env.CONVEX_SITE_URL ?? "";
 const deployment = process.env.CONVEX_DEPLOYMENT ?? "";
-if (!/^(local|anonymous):/.test(deployment) || !/^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(siteUrl)) {
-  console.error(`Refusing to run: ${deployment || "no deployment"} (${siteUrl}) is not a local Convex deployment.`);
+if (
+  !/^(local|anonymous):/.test(deployment) ||
+  !/^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(siteUrl)
+) {
+  console.error(
+    `Refusing to run: ${deployment || "no deployment"} (${siteUrl}) is not a local Convex deployment.`,
+  );
   process.exit(1);
 }
 
 const TOKEN = "123:test-token";
 const SECRET = "test-secret";
-const SCHEDULER = { id: 1000, is_bot: true, first_name: "Scheduler", username: "test_scheduler_bot" };
+const SCHEDULER = {
+  id: 1000,
+  is_bot: true,
+  first_name: "Scheduler",
+  username: "test_scheduler_bot",
+};
 const CLIENT = { id: 2000, is_bot: true, first_name: "Client", username: "test_client_bot" };
-const BROKEN_CLIENT = { id: 3000, is_bot: true, first_name: "Broken", username: "broken_client_bot" };
-const RATE_LIMITED_CLIENT = { id: 5000, is_bot: true, first_name: "Busy", username: "busy_client_bot" };
-const UNREACHABLE_CLIENT = { id: 7000, is_bot: true, first_name: "Gone", username: "gone_client_bot" };
+const BROKEN_CLIENT = {
+  id: 3000,
+  is_bot: true,
+  first_name: "Broken",
+  username: "broken_client_bot",
+};
+const RATE_LIMITED_CLIENT = {
+  id: 5000,
+  is_bot: true,
+  first_name: "Busy",
+  username: "busy_client_bot",
+};
+const UNREACHABLE_CLIENT = {
+  id: 7000,
+  is_bot: true,
+  first_name: "Gone",
+  username: "gone_client_bot",
+};
 // Random id, so active crons left over from an earlier run do not count against its quota.
-const BUSY_CRON_CLIENT = { id: 80_000 + Math.floor(Math.random() * 10_000), is_bot: true, first_name: "Many", username: "many_crons_bot" };
+const BUSY_CRON_CLIENT = {
+  id: 80_000 + Math.floor(Math.random() * 10_000),
+  is_bot: true,
+  first_name: "Many",
+  username: "many_crons_bot",
+};
 const HUMAN = { id: 6000, is_bot: false, first_name: "Human" };
 const STRANGER = { id: 4000, is_bot: true, first_name: "Stranger", username: "stranger_bot" };
 
@@ -43,19 +73,41 @@ const mock = Bun.serve({
     if (method === "sendMessage") {
       const msg = { chat_id: Number(params.chat_id), text: String(params.text) };
       if (msg.chat_id === BROKEN_CLIENT.id && msg.text.startsWith("/due")) {
-        return Response.json({ ok: false, error_code: 403, description: "Forbidden: bot was blocked" });
+        return Response.json({
+          ok: false,
+          error_code: 403,
+          description: "Forbidden: bot was blocked",
+        });
       }
       if (msg.chat_id === UNREACHABLE_CLIENT.id) {
-        return Response.json({ ok: false, error_code: 403, description: "Forbidden: bot was blocked" });
+        return Response.json({
+          ok: false,
+          error_code: 403,
+          description: "Forbidden: bot was blocked",
+        });
       }
       if (msg.chat_id === RATE_LIMITED_CLIENT.id && msg.text.startsWith("/due") && !rateLimited) {
         rateLimited = true;
-        return Response.json({ ok: false, error_code: 429, description: "Too Many Requests", parameters: { retry_after: 1 } });
+        return Response.json({
+          ok: false,
+          error_code: 429,
+          description: "Too Many Requests",
+          parameters: { retry_after: 1 },
+        });
       }
       sent.push(msg);
-      return ok({ message_id: sent.length, date: now(), chat: { id: msg.chat_id, type: "private" }, text: msg.text });
+      return ok({
+        message_id: sent.length,
+        date: now(),
+        chat: { id: msg.chat_id, type: "private" },
+        text: msg.text,
+      });
     }
-    return Response.json({ ok: false, error_code: 404, description: `mock: ${method} not implemented` });
+    return Response.json({
+      ok: false,
+      error_code: 404,
+      description: `mock: ${method} not implemented`,
+    });
   },
 });
 const ok = (result: unknown) => Response.json({ ok: true, result });
@@ -70,7 +122,13 @@ async function postUpdate(from: Sender, text: string, secret = SECRET) {
     headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": secret },
     body: JSON.stringify({
       update_id: updateId++,
-      message: { message_id: updateId, date: now(), chat: { ...from, type: "private" }, from, text },
+      message: {
+        message_id: updateId,
+        date: now(),
+        chat: { ...from, type: "private" },
+        from,
+        text,
+      },
     }),
   });
   return res.status;
@@ -89,11 +147,19 @@ async function waitForSent(predicate: (m: Sent) => boolean, timeoutMs = 5000) {
 
 async function getDocs(table: string, component?: string) {
   const args = component ? ["--component", component] : [];
-  const out = await $`bunx convex data ${table} ${args} --format jsonLines --limit 1000`.quiet().text();
-  return out.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  const out = await $`bunx convex data ${table} ${args} --format jsonLines --limit 1000`
+    .quiet()
+    .text();
+  return out
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
 }
-const getSchedule = async (taskId: string) => (await getDocs("schedules")).find((doc) => doc.taskId === taskId);
-const getRecurring = async (taskId: string) => (await getDocs("recurring")).find((doc) => doc.taskId === taskId);
+const getSchedule = async (taskId: string) =>
+  (await getDocs("schedules")).find((doc) => doc.taskId === taskId);
+const getRecurring = async (taskId: string) =>
+  (await getDocs("recurring")).find((doc) => doc.taskId === taskId);
 const countDue = (taskId: string) => sent.filter((m) => m.text === `/due ${taskId}`).length;
 /** Number of crons registered in the crons component for a recurring schedule. */
 const countCrons = async (recurringId: string) =>
@@ -118,8 +184,15 @@ console.log(`Configuring ${deployment} to use mock Bot API at ${mock.url}`);
 for (const [name, value] of Object.entries({
   BOT_TOKEN: TOKEN,
   BOT_WEBHOOK_SECRET: SECRET,
-  ALLOWED_BOT_IDS: [CLIENT, BROKEN_CLIENT, RATE_LIMITED_CLIENT, UNREACHABLE_CLIENT, BUSY_CRON_CLIENT]
-    .map((c) => c.id).join(","),
+  ALLOWED_BOT_IDS: [
+    CLIENT,
+    BROKEN_CLIENT,
+    RATE_LIMITED_CLIENT,
+    UNREACHABLE_CLIENT,
+    BUSY_CRON_CLIENT,
+  ]
+    .map((c) => c.id)
+    .join(","),
   BOT_API_ROOT: mock.url.origin,
 })) {
   await $`bunx convex env set ${name} ${value}`.quiet();
@@ -170,7 +243,9 @@ try {
   await check("treats a repeated request as idempotent", async () => {
     const before = sent.filter((m) => m.text.startsWith(`scheduled ${taskId}`)).length;
     await postUpdate(CLIENT, `/schedule ${taskId} ${runAt}`);
-    await waitForSent(() => sent.filter((m) => m.text.startsWith(`scheduled ${taskId}`)).length > before);
+    await waitForSent(
+      () => sent.filter((m) => m.text.startsWith(`scheduled ${taskId}`)).length > before,
+    );
   });
 
   await check("rejects the same task id with a different time", async () => {
@@ -181,7 +256,10 @@ try {
 
   await check("acknowledges an update to Telegram even if handling it throws", async () => {
     // The ack reply fails with 403, so the update handler throws.
-    const status = await postUpdate(UNREACHABLE_CLIENT, `/schedule ${crypto.randomUUID()} ${runAt}`);
+    const status = await postUpdate(
+      UNREACHABLE_CLIENT,
+      `/schedule ${crypto.randomUUID()} ${runAt}`,
+    );
     assert(status === 200, `expected 200, got ${status}`);
   });
 
@@ -200,7 +278,10 @@ try {
     const count = sent.filter((m) => m.text === `/due ${taskId}`).length;
     assert(count === 1, `expected 1 notification, got ${count}`);
     const doc = await getSchedule(taskId);
-    assert(doc?.status === "delivered" && doc.attempts === 1, `unexpected record: ${JSON.stringify(doc)}`);
+    assert(
+      doc?.status === "delivered" && doc.attempts === 1,
+      `unexpected record: ${JSON.stringify(doc)}`,
+    );
   });
 
   await check("acknowledges a recurring request and treats a repeat as idempotent", async () => {
@@ -218,16 +299,27 @@ try {
     await postUpdate(CLIENT, `/cron ${crypto.randomUUID()} */5 * * * * *`);
     await waitForSent((m) => m.text.startsWith("error invalid_cron cron must have 5 fields"));
     await postUpdate(CLIENT, `/cron ${crypto.randomUUID()} 0 0 30 2 *`);
-    await waitForSent((m) => m.text.startsWith("error invalid_cron cron \"0 0 30 2 *\" is not valid"));
+    await waitForSent((m) =>
+      m.text.startsWith('error invalid_cron cron "0 0 30 2 *" is not valid'),
+    );
   });
 
   await check("rejects a task id reused across one-time and recurring schedules", async () => {
     await postUpdate(CLIENT, `/cron ${cronTaskId} 0 * * * *`);
-    await waitForSent((m) => m.text.startsWith(`error conflict task ${cronTaskId} is already scheduled as cron`));
-    await postUpdate(CLIENT, `/schedule ${cronTaskId} ${new Date(Date.now() + 60_000).toISOString()}`);
-    await waitForSent(() => sent.filter((m) => m.text.startsWith(`error conflict task ${cronTaskId}`)).length === 2);
+    await waitForSent((m) =>
+      m.text.startsWith(`error conflict task ${cronTaskId} is already scheduled as cron`),
+    );
+    await postUpdate(
+      CLIENT,
+      `/schedule ${cronTaskId} ${new Date(Date.now() + 60_000).toISOString()}`,
+    );
+    await waitForSent(
+      () => sent.filter((m) => m.text.startsWith(`error conflict task ${cronTaskId}`)).length === 2,
+    );
     await postUpdate(CLIENT, `/cron ${taskId} ${EVERY_MINUTE}`);
-    await waitForSent((m) => m.text.startsWith(`error conflict task ${taskId} is already scheduled for ${runAt}`));
+    await waitForSent((m) =>
+      m.text.startsWith(`error conflict task ${taskId} is already scheduled for ${runAt}`),
+    );
   });
 
   await check("cancels a pending one-time schedule", async () => {
@@ -237,7 +329,11 @@ try {
     await postUpdate(CLIENT, `/cancel ${cancelledTaskId}`);
     await waitForSent((m) => m.text === `cancelled ${cancelledTaskId}`);
     await postUpdate(CLIENT, `/schedule ${cancelledTaskId} ${cancelledRunAt}`);
-    await waitForSent((m) => m.text.startsWith(`error conflict task ${cancelledTaskId}`) && m.text.endsWith("(cancelled)"));
+    await waitForSent(
+      (m) =>
+        m.text.startsWith(`error conflict task ${cancelledTaskId}`) &&
+        m.text.endsWith("(cancelled)"),
+    );
   });
 
   await check("cancels a recurring schedule and removes its cron", async () => {
@@ -246,10 +342,12 @@ try {
     await postUpdate(CLIENT, `/cancel ${cancelledCronTaskId}`);
     await waitForSent((m) => m.text === `cancelled ${cancelledCronTaskId}`);
     await postUpdate(CLIENT, `/cancel ${cancelledCronTaskId}`); // idempotent
-    await waitForSent(() => sent.filter((m) => m.text === `cancelled ${cancelledCronTaskId}`).length === 2);
+    await waitForSent(
+      () => sent.filter((m) => m.text === `cancelled ${cancelledCronTaskId}`).length === 2,
+    );
     const doc = await getRecurring(cancelledCronTaskId);
     assert(doc?.status === "cancelled", `unexpected record: ${JSON.stringify(doc)}`);
-    assert(await countCrons(doc._id) === 0, "cron is still registered");
+    assert((await countCrons(doc._id)) === 0, "cron is still registered");
   });
 
   await check("reports unknown tasks on cancel", async () => {
@@ -264,12 +362,21 @@ try {
       // Once a year, so these never fire during the test.
       await postUpdate(BUSY_CRON_CLIENT, `/cron ${crypto.randomUUID()} 0 0 1 1 *`);
     }
-    await waitForSent(() => sent.filter((m) => m.chat_id === BUSY_CRON_CLIENT.id && m.text.startsWith("cron ")).length === LIMIT, 30_000);
+    await waitForSent(
+      () =>
+        sent.filter((m) => m.chat_id === BUSY_CRON_CLIENT.id && m.text.startsWith("cron "))
+          .length === LIMIT,
+      30_000,
+    );
     const extra = crypto.randomUUID();
     await postUpdate(BUSY_CRON_CLIENT, `/cron ${extra} 0 0 1 1 *`);
-    await waitForSent((m) => m.chat_id === BUSY_CRON_CLIENT.id && m.text.startsWith("error quota_exceeded"));
+    await waitForSent(
+      (m) => m.chat_id === BUSY_CRON_CLIENT.id && m.text.startsWith("error quota_exceeded"),
+    );
     // Cancelling one frees a slot.
-    const first = (await getDocs("recurring")).find((d) => d.clientId === BUSY_CRON_CLIENT.id && d.status === "active");
+    const first = (await getDocs("recurring")).find(
+      (d) => d.clientId === BUSY_CRON_CLIENT.id && d.status === "active",
+    );
     await postUpdate(BUSY_CRON_CLIENT, `/cancel ${first.taskId}`);
     await waitForSent((m) => m.text === `cancelled ${first.taskId}`);
     await postUpdate(BUSY_CRON_CLIENT, `/cron ${extra} 0 0 1 1 *`);
@@ -285,12 +392,18 @@ try {
     await Bun.sleep(Math.max(0, Date.parse(cancelledRunAt) + 2000 - Date.now()));
     assert(countDue(cancelledTaskId) === 0, "cancelled schedule was delivered");
     const doc = await getSchedule(cancelledTaskId);
-    assert(doc?.status === "cancelled" && doc.attempts === 0, `unexpected record: ${JSON.stringify(doc)}`);
+    assert(
+      doc?.status === "cancelled" && doc.attempts === 0,
+      `unexpected record: ${JSON.stringify(doc)}`,
+    );
   });
 
   await check("marks a permanently failing delivery as failed without retrying", async () => {
     const doc = await getSchedule(failingTaskId);
-    assert(doc?.status === "failed" && doc.attempts === 1, `unexpected record: ${JSON.stringify(doc)}`);
+    assert(
+      doc?.status === "failed" && doc.attempts === 1,
+      `unexpected record: ${JSON.stringify(doc)}`,
+    );
     assert(String(doc.lastError).includes("403"), `unexpected error: ${doc.lastError}`);
   });
 
@@ -298,7 +411,10 @@ try {
     await waitForSent((m) => m.text === `/due ${retriedTaskId}`, 10_000);
     assert(rateLimited, "the first attempt was not rate limited");
     const doc = await getSchedule(retriedTaskId);
-    assert(doc?.status === "delivered" && doc.attempts === 2, `unexpected record: ${JSON.stringify(doc)}`);
+    assert(
+      doc?.status === "delivered" && doc.attempts === 2,
+      `unexpected record: ${JSON.stringify(doc)}`,
+    );
   });
 
   console.log("  ...   waiting up to two minutes for cron runs");
@@ -310,7 +426,10 @@ try {
       assert(second < 10, `run ${n} arrived ${second}s past the minute`);
     }
     const doc = await getRecurring(cronTaskId);
-    assert(doc?.status === "active" && doc.lastDeliveredAt, `unexpected record: ${JSON.stringify(doc)}`);
+    assert(
+      doc?.status === "active" && doc.lastDeliveredAt,
+      `unexpected record: ${JSON.stringify(doc)}`,
+    );
   });
 
   await check("does not run a cancelled recurring schedule", async () => {
@@ -320,12 +439,18 @@ try {
   await check("stops a recurring schedule after a permanent delivery error", async () => {
     // Its first run can fall on the same minute as the second run above.
     let doc = await getRecurring(failingCronTaskId);
-    for (const deadline = Date.now() + 70_000; doc?.status === "active" && Date.now() < deadline;) {
+    for (
+      const deadline = Date.now() + 70_000;
+      doc?.status === "active" && Date.now() < deadline;
+    ) {
       await Bun.sleep(1000);
       doc = await getRecurring(failingCronTaskId);
     }
-    assert(doc?.status === "failed" && String(doc.lastError).includes("403"), `unexpected record: ${JSON.stringify(doc)}`);
-    assert(await countCrons(doc._id) === 0, "cron of the failed schedule is still registered");
+    assert(
+      doc?.status === "failed" && String(doc.lastError).includes("403"),
+      `unexpected record: ${JSON.stringify(doc)}`,
+    );
+    assert((await countCrons(doc._id)) === 0, "cron of the failed schedule is still registered");
   });
 
   await check("stops recurring delivery after cancel", async () => {
@@ -333,7 +458,7 @@ try {
     await waitForSent((m) => m.text === `cancelled ${cronTaskId}`);
     const doc = await getRecurring(cronTaskId);
     assert(doc?.status === "cancelled", `unexpected record: ${JSON.stringify(doc)}`);
-    assert(await countCrons(doc._id) === 0, "cron is still registered");
+    assert((await countCrons(doc._id)) === 0, "cron is still registered");
   });
 
   await check("ALLOWED_BOT_IDS=* accepts any bot but not human users", async () => {
@@ -341,7 +466,9 @@ try {
     const strangerTaskId = crypto.randomUUID();
     const later = new Date(Date.now() + 60_000).toISOString();
     await postUpdate(STRANGER, `/schedule ${strangerTaskId} ${later}`);
-    await waitForSent((m) => m.chat_id === STRANGER.id && m.text.startsWith(`scheduled ${strangerTaskId}`));
+    await waitForSent(
+      (m) => m.chat_id === STRANGER.id && m.text.startsWith(`scheduled ${strangerTaskId}`),
+    );
     await postUpdate(HUMAN, `/schedule ${crypto.randomUUID()} ${later}`);
     await Bun.sleep(500);
     assert(!sent.some((m) => m.chat_id === HUMAN.id), "replied to a human user");
@@ -351,5 +478,7 @@ try {
 }
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nAll checks passed");
-console.log("Note: the local deployment now has test env vars; set real ones before using it with Telegram.");
+console.log(
+  "Note: the local deployment now has test env vars; set real ones before using it with Telegram.",
+);
 process.exit(failures ? 1 : 0);

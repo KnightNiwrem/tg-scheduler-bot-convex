@@ -35,8 +35,7 @@ export type ParseResult = { ok: true; taskId: string; runAt: number } | ParseErr
 export type CronParseResult = { ok: true; taskId: string; cronspec: string } | ParseError;
 export type CancelParseResult = { ok: true; taskId: string } | ParseError;
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ISO 8601 date-time with a mandatory UTC offset, e.g. 2026-11-01T09:30:00Z
 // or 2026-11-01T17:30:00+08:00. Seconds and milliseconds are optional.
@@ -140,10 +139,10 @@ function isValidCron(cronspec: string): boolean {
 
 export function parseCancelRequest(text: string): CancelParseResult {
   const parts = text.trim().split(/\s+/);
-  if (parts.length !== 2) {
+  const rawTaskId = parts[1];
+  if (parts.length !== 2 || rawTaskId === undefined) {
     return { ok: false, code: "invalid_request", detail: "expected: /cancel <task-uuid>" };
   }
-  const rawTaskId = parts[1]!;
   if (!UUID_RE.test(rawTaskId)) {
     return { ok: false, code: "invalid_task_id", detail: "task id must be a UUID" };
   }
@@ -155,7 +154,11 @@ export function parseIsoTime(value: string): number | null {
   const m = TIME_RE.exec(value);
   if (!m) return null;
   const [year, month, day, hour, minute] = m.slice(1, 6).map(Number) as [
-    number, number, number, number, number,
+    number,
+    number,
+    number,
+    number,
+    number,
   ];
   const second = Number(m[6] ?? 0);
   const millis = Number((m[7] ?? "0").padEnd(3, "0"));

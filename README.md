@@ -21,16 +21,16 @@ client bot ──/schedule <uuid> <time>──▶ scheduler bot ──webhook─
 
 All messages are plain text in the private chat between the client bot and the scheduler bot.
 
-| Direction | Message | Example |
-|---|---|---|
-| client → scheduler | `/schedule <task-uuid> <time>` | `/schedule 8c7e3f7a-1b2c-4d5e-9f00-112233445566 2026-11-01T09:30:00Z` |
-| scheduler → client | `scheduled <task-uuid> <time in UTC>` | `scheduled 8c7e3f7a-… 2026-11-01T09:30:00.000Z` |
-| client → scheduler | `/cron <task-uuid> <cron>` | `/cron 8c7e3f7a-1b2c-4d5e-9f00-112233445566 */5 9-17 * * MON-FRI` |
-| scheduler → client | `cron <task-uuid> <cron>` | `cron 8c7e3f7a-… */5 9-17 * * MON-FRI` |
-| client → scheduler | `/cancel <task-uuid>` | `/cancel 8c7e3f7a-1b2c-4d5e-9f00-112233445566` |
-| scheduler → client | `cancelled <task-uuid>` | `cancelled 8c7e3f7a-…` |
-| scheduler → client | `error <code> <detail>` | `error time_in_past time must be in the future` |
-| scheduler → client, at `<time>` or on every cron run | `/due <task-uuid>` | `/due 8c7e3f7a-1b2c-4d5e-9f00-112233445566` |
+| Direction                                            | Message                               | Example                                                               |
+| ---------------------------------------------------- | ------------------------------------- | --------------------------------------------------------------------- |
+| client → scheduler                                   | `/schedule <task-uuid> <time>`        | `/schedule 8c7e3f7a-1b2c-4d5e-9f00-112233445566 2026-11-01T09:30:00Z` |
+| scheduler → client                                   | `scheduled <task-uuid> <time in UTC>` | `scheduled 8c7e3f7a-… 2026-11-01T09:30:00.000Z`                       |
+| client → scheduler                                   | `/cron <task-uuid> <cron>`            | `/cron 8c7e3f7a-1b2c-4d5e-9f00-112233445566 */5 9-17 * * MON-FRI`     |
+| scheduler → client                                   | `cron <task-uuid> <cron>`             | `cron 8c7e3f7a-… */5 9-17 * * MON-FRI`                                |
+| client → scheduler                                   | `/cancel <task-uuid>`                 | `/cancel 8c7e3f7a-1b2c-4d5e-9f00-112233445566`                        |
+| scheduler → client                                   | `cancelled <task-uuid>`               | `cancelled 8c7e3f7a-…`                                                |
+| scheduler → client                                   | `error <code> <detail>`               | `error time_in_past time must be in the future`                       |
+| scheduler → client, at `<time>` or on every cron run | `/due <task-uuid>`                    | `/due 8c7e3f7a-1b2c-4d5e-9f00-112233445566`                           |
 
 - `<time>` must be ISO 8601 and must include an offset: `Z` or `±HH:MM`. Seconds and milliseconds
   are optional. The time must be in the future and no more than 366 days ahead.
@@ -147,29 +147,30 @@ schedules (two runs on consecutive minute boundaries, cancel, quota, and stoppin
 error), and cancelling one-time schedules. The cron checks wait for real minute boundaries, so the
 run takes about three minutes. It overwrites the deployment's environment variables, so it refuses to run against non-local deployments.
 
-Other checks: `bun test` (protocol parsing) and `bun run typecheck`.
+Other checks: `bun test` (protocol parsing), `bun run typecheck`, and `bun run check` (Biome lint and
+format; `bun run check:fix` applies fixes). CI runs all of these on every push and pull request.
 
 ## Configuration
 
-| Variable | Required | Description |
-|---|---|---|
-| `BOT_TOKEN` | yes | Scheduler bot token |
-| `BOT_WEBHOOK_SECRET` | yes | 1–256 chars of `A-Z a-z 0-9 _ -`. Telegram sends it with every update, and requests without it get a 401 |
-| `ALLOWED_BOT_IDS` | yes | Comma-separated Telegram user ids allowed to schedule, or `*` for any bot |
-| `BOT_API_ROOT` | no | Bot API base URL, e.g. a [local Bot API server](https://github.com/tdlib/telegram-bot-api). Defaults to `https://api.telegram.org` |
+| Variable             | Required | Description                                                                                                                        |
+| -------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `BOT_TOKEN`          | yes      | Scheduler bot token                                                                                                                |
+| `BOT_WEBHOOK_SECRET` | yes      | 1–256 chars of `A-Z a-z 0-9 _ -`. Telegram sends it with every update, and requests without it get a 401                           |
+| `ALLOWED_BOT_IDS`    | yes      | Comma-separated Telegram user ids allowed to schedule, or `*` for any bot                                                          |
+| `BOT_API_ROOT`       | no       | Bot API base URL, e.g. a [local Bot API server](https://github.com/tdlib/telegram-bot-api). Defaults to `https://api.telegram.org` |
 
 ## How it works
 
-| File | Purpose |
-|---|---|
-| `convex/http.ts` | `POST /telegram/webhook`. Checks the secret token, then hands the request to grammY's `webhookCallback` (the `std/http` adapter takes a `Request` and returns a `Response`, which is what Convex HTTP actions use). |
-| `convex/bot.ts` | grammY bot. Checks the allowlist, parses `/schedule`, `/cron` and `/cancel`, runs the matching mutation, and replies. |
-| `convex/protocol.ts` | Message parsing and formatting, as pure functions. Cron expressions are validated with `cron-parser`, the parser the crons component uses. |
-| `convex/schedules.ts` | One-time schedules: `create` mutation (idempotent insert plus `ctx.scheduler.runAt`), and the `deliver` action with its state transitions. |
-| `convex/recurring.ts` | Recurring schedules: `create` mutation (idempotent insert plus a cron registered in the same transaction), and the `fire` action that each cron run calls. |
-| `convex/tasks.ts` | Task lookup shared by both kinds, and the `cancel` mutation. |
-| `convex/convex.config.ts` | Installs the [`@convex-dev/crons`](https://www.npmjs.com/package/@convex-dev/crons) component. |
-| `convex/telegram.ts` | Config helpers, plus the `setWebhook` and `status` actions. |
+| File                      | Purpose                                                                                                                                                                                                             |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `convex/http.ts`          | `POST /telegram/webhook`. Checks the secret token, then hands the request to grammY's `webhookCallback` (the `std/http` adapter takes a `Request` and returns a `Response`, which is what Convex HTTP actions use). |
+| `convex/bot.ts`           | grammY bot. Checks the allowlist, parses `/schedule`, `/cron` and `/cancel`, runs the matching mutation, and replies.                                                                                               |
+| `convex/protocol.ts`      | Message parsing and formatting, as pure functions. Cron expressions are validated with `cron-parser`, the parser the crons component uses.                                                                          |
+| `convex/schedules.ts`     | One-time schedules: `create` mutation (idempotent insert plus `ctx.scheduler.runAt`), and the `deliver` action with its state transitions.                                                                          |
+| `convex/recurring.ts`     | Recurring schedules: `create` mutation (idempotent insert plus a cron registered in the same transaction), and the `fire` action that each cron run calls.                                                          |
+| `convex/tasks.ts`         | Task lookup shared by both kinds, and the `cancel` mutation.                                                                                                                                                        |
+| `convex/convex.config.ts` | Installs the [`@convex-dev/crons`](https://www.npmjs.com/package/@convex-dev/crons) component.                                                                                                                      |
+| `convex/telegram.ts`      | Config helpers, plus the `setWebhook` and `status` actions.                                                                                                                                                         |
 
 Each schedule moves through `pending → sending → delivered`. If a send fails with a transient error
 (network, Telegram 5xx, or 429, which honors `retry_after`), the schedule goes back to `pending` and is
@@ -198,13 +199,13 @@ component skips the new run.
 - **Precision.** In local testing, delivery ran within about a second of the scheduled time. Telegram
   delivery adds some latency on top of that, and sub-second precision isn't guaranteed.
 - **Notifications go to the chat id.** Acks and `/due` are sent to the client bot's numeric id, which
-  is also the id of its private chat. Telegram's docs describe *starting* a bot-to-bot chat with
+  is also the id of its private chat. Telegram's docs describe _starting_ a bot-to-bot chat with
   `@username`. This service only sends in chats the client has already started, so a username change
   doesn't break delivery.
 - **Trust model.** Bots on the allowlist are trusted. Recurring schedules are capped at 50 active per
   client, because they run forever. One-time schedules have no quota or rate limit yet, and an
   allowlisted bot can create as many as Convex allows (1M outstanding scheduled functions per
-  deployment). With `ALLOWED_BOT_IDS='*'`, *any* bot can do this, and any number of bots can each
+  deployment). With `ALLOWED_BOT_IDS='*'`, _any_ bot can do this, and any number of bots can each
   hold 50 every-minute crons. Before running an open instance, add a global quota.
 - **Cancel races a run that already started.** A `/due` that is already being sent when `/cancel`
   arrives is still delivered.

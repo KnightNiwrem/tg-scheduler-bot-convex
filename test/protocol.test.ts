@@ -30,7 +30,9 @@ describe("parseIsoTime", () => {
   test("accepts UTC and offsets", () => {
     expect(parseIsoTime("2026-01-01T10:00:00Z")).toBe(Date.parse("2026-01-01T10:00:00Z"));
     expect(parseIsoTime("2026-01-01T18:00+08:00")).toBe(Date.parse("2026-01-01T10:00:00Z"));
-    expect(parseIsoTime("2026-01-01T05:30:00.5-04:30")).toBe(Date.parse("2026-01-01T10:00:00.500Z"));
+    expect(parseIsoTime("2026-01-01T05:30:00.5-04:30")).toBe(
+      Date.parse("2026-01-01T10:00:00.500Z"),
+    );
   });
   test("rejects ambiguous or invalid values", () => {
     for (const value of [
