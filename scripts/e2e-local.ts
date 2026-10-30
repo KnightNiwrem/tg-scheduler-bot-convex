@@ -23,6 +23,7 @@ const SCHEDULER = { id: 1000, is_bot: true, first_name: "Scheduler", username: "
 const CLIENT = { id: 2000, is_bot: true, first_name: "Client", username: "test_client_bot" };
 const BROKEN_CLIENT = { id: 3000, is_bot: true, first_name: "Broken", username: "broken_client_bot" };
 const RATE_LIMITED_CLIENT = { id: 5000, is_bot: true, first_name: "Busy", username: "busy_client_bot" };
+const UNREACHABLE_CLIENT = { id: 7000, is_bot: true, first_name: "Gone", username: "gone_client_bot" };
 const HUMAN = { id: 6000, is_bot: false, first_name: "Human" };
 const STRANGER = { id: 4000, is_bot: true, first_name: "Stranger", username: "stranger_bot" };
 
@@ -40,6 +41,9 @@ const mock = Bun.serve({
     if (method === "sendMessage") {
       const msg = { chat_id: Number(params.chat_id), text: String(params.text) };
       if (msg.chat_id === BROKEN_CLIENT.id && msg.text.startsWith("/due")) {
+        return Response.json({ ok: false, error_code: 403, description: "Forbidden: bot was blocked" });
+      }
+      if (msg.chat_id === UNREACHABLE_CLIENT.id) {
         return Response.json({ ok: false, error_code: 403, description: "Forbidden: bot was blocked" });
       }
       if (msg.chat_id === RATE_LIMITED_CLIENT.id && msg.text.startsWith("/due") && !rateLimited) {
@@ -106,7 +110,7 @@ console.log(`Configuring ${deployment} to use mock Bot API at ${mock.url}`);
 for (const [name, value] of Object.entries({
   BOT_TOKEN: TOKEN,
   BOT_WEBHOOK_SECRET: SECRET,
-  ALLOWED_BOT_IDS: `${CLIENT.id},${BROKEN_CLIENT.id},${RATE_LIMITED_CLIENT.id}`,
+  ALLOWED_BOT_IDS: `${CLIENT.id},${BROKEN_CLIENT.id},${RATE_LIMITED_CLIENT.id},${UNREACHABLE_CLIENT.id}`,
   BOT_API_ROOT: mock.url.origin,
 })) {
   await $`bunx convex env set ${name} ${value}`.quiet();
@@ -158,6 +162,12 @@ try {
     const otherTime = new Date(Date.parse(runAt) + 60_000).toISOString();
     await postUpdate(CLIENT, `/schedule ${taskId} ${otherTime}`);
     await waitForSent((m) => m.text.startsWith(`error conflict task ${taskId}`));
+  });
+
+  await check("acknowledges an update to Telegram even if handling it throws", async () => {
+    // The ack reply fails with 403, so the update handler throws.
+    const status = await postUpdate(UNREACHABLE_CLIENT, `/schedule ${crypto.randomUUID()} ${runAt}`);
+    assert(status === 200, `expected 200, got ${status}`);
   });
 
   await check("schedules tasks whose delivery will fail", async () => {
