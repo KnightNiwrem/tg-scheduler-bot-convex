@@ -1,0 +1,7 @@
+node_modules
+.env
+.env.local
+# Local Convex backend state (convex dev --local / anonymous mode)
+.convex
+*.tsbuildinfo
+.DS_Store

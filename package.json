@@ -1,0 +1,32 @@
+{
+  "name": "tg-scheduler-bot-convex",
+  "version": "0.1.0",
+  "description": "Telegram bot that schedules one-time notifications for other Telegram bots. grammY + Convex.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KnightNiwrem/tg-scheduler-bot-convex.git"
+  },
+  "homepage": "https://github.com/KnightNiwrem/tg-scheduler-bot-convex#readme",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "convex dev",
+    "deploy": "convex deploy",
+    "set-webhook": "convex run telegram:setWebhook",
+    "status": "convex run telegram:status",
+    "demo-client": "bun scripts/demo-client.ts",
+    "e2e:local": "bun scripts/e2e-local.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p convex && tsc --noEmit"
+  },
+  "dependencies": {
+    "convex": "^1.48.0",
+    "grammy": "^1.46.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}

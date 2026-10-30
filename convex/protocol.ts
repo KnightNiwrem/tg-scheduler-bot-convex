@@ -1,0 +1,107 @@
+// Wire protocol between client bots and the scheduler bot. Pure functions only,
+// so this module can be unit tested outside of Convex.
+//
+//   request:      /schedule <task-uuid> <run-at>
+//   ack:          scheduled <task-uuid> <run-at as ISO 8601 UTC>
+//   error:        error <code> <human readable detail>
+//   notification: /due <task-uuid>
+
+export const MAX_SCHEDULE_AHEAD_MS = 366 * 24 * 60 * 60 * 1000;
+
+export type ErrorCode =
+  | "invalid_request"
+  | "invalid_task_id"
+  | "invalid_time"
+  | "time_in_past"
+  | "time_too_far"
+  | "conflict"
+  | "internal";
+
+export type ParseResult =
+  | { ok: true; taskId: string; runAt: number }
+  | { ok: false; code: ErrorCode; detail: string };
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// ISO 8601 date-time with a mandatory UTC offset, e.g. 2026-11-01T09:30:00Z
+// or 2026-11-01T17:30:00+08:00. Seconds and milliseconds are optional.
+const TIME_RE =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|([+-])(\d{2}):(\d{2}))$/;
+
+/**
+ * Returns true if `text` is addressed to the /schedule command, optionally in
+ * the `/schedule@SchedulerBot` form. Everything else is ignored by the bot.
+ */
+export function isScheduleCommand(text: string, botUsername: string): boolean {
+  const head = text.trimStart().split(/\s/, 1)[0] ?? "";
+  return (
+    head === "/schedule" ||
+    head.toLowerCase() === `/schedule@${botUsername.toLowerCase()}`
+  );
+}
+
+export function parseScheduleRequest(text: string, now: number): ParseResult {
+  const parts = text.trim().split(/\s+/);
+  if (parts.length !== 3) {
+    return {
+      ok: false,
+      code: "invalid_request",
+      detail: "expected: /schedule <task-uuid> <ISO-8601 time with offset>",
+    };
+  }
+  const [, rawTaskId, rawTime] = parts as [string, string, string];
+
+  if (!UUID_RE.test(rawTaskId)) {
+    return { ok: false, code: "invalid_task_id", detail: "task id must be a UUID" };
+  }
+
+  const runAt = parseIsoTime(rawTime);
+  if (runAt === null) {
+    return {
+      ok: false,
+      code: "invalid_time",
+      detail: "time must be ISO 8601 with an offset, e.g. 2026-11-01T09:30:00Z",
+    };
+  }
+  if (runAt <= now) {
+    return { ok: false, code: "time_in_past", detail: "time must be in the future" };
+  }
+  if (runAt - now > MAX_SCHEDULE_AHEAD_MS) {
+    return { ok: false, code: "time_too_far", detail: "time must be within 366 days" };
+  }
+
+  return { ok: true, taskId: rawTaskId.toLowerCase(), runAt };
+}
+
+/** Parses a strict ISO 8601 timestamp into epoch milliseconds, or null. */
+export function parseIsoTime(value: string): number | null {
+  const m = TIME_RE.exec(value);
+  if (!m) return null;
+  const [year, month, day, hour, minute] = m.slice(1, 6).map(Number) as [
+    number, number, number, number, number,
+  ];
+  const second = Number(m[6] ?? 0);
+  const millis = Number((m[7] ?? "0").padEnd(3, "0"));
+
+  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return null;
+  const local = Date.UTC(year, month - 1, day, hour, minute, second, millis);
+  // Date.UTC silently rolls over invalid days (Feb 30 -> Mar 2); reject those.
+  if (new Date(local).getUTCDate() !== day) return null;
+
+  let offsetMs = 0;
+  if (m[8] !== "Z") {
+    const offsetHours = Number(m[10]);
+    const offsetMinutes = Number(m[11]);
+    if (offsetHours > 23 || offsetMinutes > 59) return null;
+    offsetMs = (m[9] === "-" ? -1 : 1) * (offsetHours * 60 + offsetMinutes) * 60_000;
+  }
+  return local - offsetMs;
+}
+
+export const formatAck = (taskId: string, runAt: number) =>
+  `scheduled ${taskId} ${new Date(runAt).toISOString()}`;
+
+export const formatError = (code: ErrorCode, detail: string) => `error ${code} ${detail}`;
+
+export const formatDue = (taskId: string) => `/due ${taskId}`;
