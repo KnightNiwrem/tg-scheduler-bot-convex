@@ -1,7 +1,7 @@
 {
   "name": "tg-scheduler-bot-convex",
   "version": "0.1.0",
-  "description": "Telegram bot that schedules one-time notifications for other Telegram bots. grammY + Convex.",
+  "description": "Telegram bot that schedules one-time and recurring notifications for other Telegram bots. grammY + Convex.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -21,7 +21,9 @@
     "typecheck": "tsc --noEmit -p convex && tsc --noEmit"
   },
   "dependencies": {
+    "@convex-dev/crons": "^0.2.3",
     "convex": "^1.48.0",
+    "cron-parser": "^4.9.0",
     "grammy": "^1.46.0"
   },
   "devDependencies": {

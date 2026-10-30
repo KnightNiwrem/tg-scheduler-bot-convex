@@ -11,7 +11,9 @@
 import type * as bot from "../bot.js";
 import type * as http from "../http.js";
 import type * as protocol from "../protocol.js";
+import type * as recurring from "../recurring.js";
 import type * as schedules from "../schedules.js";
+import type * as tasks from "../tasks.js";
 import type * as telegram from "../telegram.js";
 
 import type {
@@ -24,7 +26,9 @@ declare const fullApi: ApiFromModules<{
   bot: typeof bot;
   http: typeof http;
   protocol: typeof protocol;
+  recurring: typeof recurring;
   schedules: typeof schedules;
+  tasks: typeof tasks;
   telegram: typeof telegram;
 }>;
 
@@ -54,4 +58,6 @@ export declare const internal: FilterApi<
   FunctionReference<any, "internal">
 >;
 
-export declare const components: {};
+export declare const components: {
+  crons: import("@convex-dev/crons/_generated/component.js").ComponentApi<"crons">;
+};
