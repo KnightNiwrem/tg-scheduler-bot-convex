@@ -24,6 +24,8 @@ const CLIENT = { id: 2000, is_bot: true, first_name: "Client", username: "test_c
 const BROKEN_CLIENT = { id: 3000, is_bot: true, first_name: "Broken", username: "broken_client_bot" };
 const RATE_LIMITED_CLIENT = { id: 5000, is_bot: true, first_name: "Busy", username: "busy_client_bot" };
 const UNREACHABLE_CLIENT = { id: 7000, is_bot: true, first_name: "Gone", username: "gone_client_bot" };
+// Random id, so active crons left over from an earlier run do not count against its quota.
+const BUSY_CRON_CLIENT = { id: 80_000 + Math.floor(Math.random() * 10_000), is_bot: true, first_name: "Many", username: "many_crons_bot" };
 const HUMAN = { id: 6000, is_bot: false, first_name: "Human" };
 const STRANGER = { id: 4000, is_bot: true, first_name: "Stranger", username: "stranger_bot" };
 
@@ -85,11 +87,17 @@ async function waitForSent(predicate: (m: Sent) => boolean, timeoutMs = 5000) {
   throw new Error("timed out waiting for message");
 }
 
-async function getSchedule(taskId: string) {
-  const out = await $`bunx convex data schedules --format jsonLines --limit 1000`.quiet().text();
-  return out.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line))
-    .find((doc) => doc.taskId === taskId);
+async function getDocs(table: string, component?: string) {
+  const args = component ? ["--component", component] : [];
+  const out = await $`bunx convex data ${table} ${args} --format jsonLines --limit 1000`.quiet().text();
+  return out.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
 }
+const getSchedule = async (taskId: string) => (await getDocs("schedules")).find((doc) => doc.taskId === taskId);
+const getRecurring = async (taskId: string) => (await getDocs("recurring")).find((doc) => doc.taskId === taskId);
+const countDue = (taskId: string) => sent.filter((m) => m.text === `/due ${taskId}`).length;
+/** Number of crons registered in the crons component for a recurring schedule. */
+const countCrons = async (recurringId: string) =>
+  (await getDocs("crons", "crons")).filter((c) => c.args.recurringId === recurringId).length;
 
 let failures = 0;
 async function check(name: string, fn: () => Promise<void>) {
@@ -110,7 +118,8 @@ console.log(`Configuring ${deployment} to use mock Bot API at ${mock.url}`);
 for (const [name, value] of Object.entries({
   BOT_TOKEN: TOKEN,
   BOT_WEBHOOK_SECRET: SECRET,
-  ALLOWED_BOT_IDS: `${CLIENT.id},${BROKEN_CLIENT.id},${RATE_LIMITED_CLIENT.id},${UNREACHABLE_CLIENT.id}`,
+  ALLOWED_BOT_IDS: [CLIENT, BROKEN_CLIENT, RATE_LIMITED_CLIENT, UNREACHABLE_CLIENT, BUSY_CRON_CLIENT]
+    .map((c) => c.id).join(","),
   BOT_API_ROOT: mock.url.origin,
 })) {
   await $`bunx convex env set ${name} ${value}`.quiet();
@@ -120,6 +129,12 @@ const taskId = crypto.randomUUID();
 const runAt = new Date(Date.now() + 4000).toISOString();
 const failingTaskId = crypto.randomUUID();
 const retriedTaskId = crypto.randomUUID();
+const cancelledTaskId = crypto.randomUUID();
+const cronTaskId = crypto.randomUUID();
+const cancelledCronTaskId = crypto.randomUUID();
+const failingCronTaskId = crypto.randomUUID();
+const EVERY_MINUTE = "* * * * *";
+let cancelledRunAt = "";
 
 try {
   await check("rejects a request with a wrong webhook secret", async () => {
@@ -188,6 +203,91 @@ try {
     assert(doc?.status === "delivered" && doc.attempts === 1, `unexpected record: ${JSON.stringify(doc)}`);
   });
 
+  await check("acknowledges a recurring request and treats a repeat as idempotent", async () => {
+    await postUpdate(CLIENT, `/cron ${cronTaskId} ${EVERY_MINUTE}`);
+    const ack = await waitForSent((m) => m.text.startsWith(`cron ${cronTaskId}`));
+    assert(ack.text === `cron ${cronTaskId} ${EVERY_MINUTE}`, `unexpected ack: ${ack.text}`);
+    await postUpdate(CLIENT, `/cron ${cronTaskId}  ${EVERY_MINUTE}`);
+    await waitForSent(() => sent.filter((m) => m.text === ack.text).length === 2);
+    const doc = await getRecurring(cronTaskId);
+    const crons = await countCrons(doc?._id);
+    assert(crons === 1, `expected 1 registered cron, got ${crons}`);
+  });
+
+  await check("rejects crons that are invalid or more frequent than once a minute", async () => {
+    await postUpdate(CLIENT, `/cron ${crypto.randomUUID()} */5 * * * * *`);
+    await waitForSent((m) => m.text.startsWith("error invalid_cron cron must have 5 fields"));
+    await postUpdate(CLIENT, `/cron ${crypto.randomUUID()} 0 0 30 2 *`);
+    await waitForSent((m) => m.text.startsWith("error invalid_cron cron \"0 0 30 2 *\" is not valid"));
+  });
+
+  await check("rejects a task id reused across one-time and recurring schedules", async () => {
+    await postUpdate(CLIENT, `/cron ${cronTaskId} 0 * * * *`);
+    await waitForSent((m) => m.text.startsWith(`error conflict task ${cronTaskId} is already scheduled as cron`));
+    await postUpdate(CLIENT, `/schedule ${cronTaskId} ${new Date(Date.now() + 60_000).toISOString()}`);
+    await waitForSent(() => sent.filter((m) => m.text.startsWith(`error conflict task ${cronTaskId}`)).length === 2);
+    await postUpdate(CLIENT, `/cron ${taskId} ${EVERY_MINUTE}`);
+    await waitForSent((m) => m.text.startsWith(`error conflict task ${taskId} is already scheduled for ${runAt}`));
+  });
+
+  await check("cancels a pending one-time schedule", async () => {
+    cancelledRunAt = new Date(Date.now() + 3000).toISOString();
+    await postUpdate(CLIENT, `/schedule ${cancelledTaskId} ${cancelledRunAt}`);
+    await waitForSent((m) => m.text.startsWith(`scheduled ${cancelledTaskId}`));
+    await postUpdate(CLIENT, `/cancel ${cancelledTaskId}`);
+    await waitForSent((m) => m.text === `cancelled ${cancelledTaskId}`);
+    await postUpdate(CLIENT, `/schedule ${cancelledTaskId} ${cancelledRunAt}`);
+    await waitForSent((m) => m.text.startsWith(`error conflict task ${cancelledTaskId}`) && m.text.endsWith("(cancelled)"));
+  });
+
+  await check("cancels a recurring schedule and removes its cron", async () => {
+    await postUpdate(CLIENT, `/cron ${cancelledCronTaskId} ${EVERY_MINUTE}`);
+    await waitForSent((m) => m.text.startsWith(`cron ${cancelledCronTaskId}`));
+    await postUpdate(CLIENT, `/cancel ${cancelledCronTaskId}`);
+    await waitForSent((m) => m.text === `cancelled ${cancelledCronTaskId}`);
+    await postUpdate(CLIENT, `/cancel ${cancelledCronTaskId}`); // idempotent
+    await waitForSent(() => sent.filter((m) => m.text === `cancelled ${cancelledCronTaskId}`).length === 2);
+    const doc = await getRecurring(cancelledCronTaskId);
+    assert(doc?.status === "cancelled", `unexpected record: ${JSON.stringify(doc)}`);
+    assert(await countCrons(doc._id) === 0, "cron is still registered");
+  });
+
+  await check("reports unknown tasks on cancel", async () => {
+    const unknown = crypto.randomUUID();
+    await postUpdate(CLIENT, `/cancel ${unknown}`);
+    await waitForSent((m) => m.text === `error not_found no schedule for task ${unknown}`);
+  });
+
+  await check("limits the number of active recurring schedules per client", async () => {
+    const LIMIT = 50;
+    for (let i = 0; i < LIMIT; i++) {
+      // Once a year, so these never fire during the test.
+      await postUpdate(BUSY_CRON_CLIENT, `/cron ${crypto.randomUUID()} 0 0 1 1 *`);
+    }
+    await waitForSent(() => sent.filter((m) => m.chat_id === BUSY_CRON_CLIENT.id && m.text.startsWith("cron ")).length === LIMIT, 30_000);
+    const extra = crypto.randomUUID();
+    await postUpdate(BUSY_CRON_CLIENT, `/cron ${extra} 0 0 1 1 *`);
+    await waitForSent((m) => m.chat_id === BUSY_CRON_CLIENT.id && m.text.startsWith("error quota_exceeded"));
+    // Cancelling one frees a slot.
+    const first = (await getDocs("recurring")).find((d) => d.clientId === BUSY_CRON_CLIENT.id && d.status === "active");
+    await postUpdate(BUSY_CRON_CLIENT, `/cancel ${first.taskId}`);
+    await waitForSent((m) => m.text === `cancelled ${first.taskId}`);
+    await postUpdate(BUSY_CRON_CLIENT, `/cron ${extra} 0 0 1 1 *`);
+    await waitForSent((m) => m.text === `cron ${extra} 0 0 1 1 *`);
+  });
+
+  await check("schedules a recurring task whose delivery will fail", async () => {
+    await postUpdate(BROKEN_CLIENT, `/cron ${failingCronTaskId} ${EVERY_MINUTE}`);
+    await waitForSent((m) => m.text.startsWith(`cron ${failingCronTaskId}`));
+  });
+
+  await check("does not deliver a cancelled one-time schedule", async () => {
+    await Bun.sleep(Math.max(0, Date.parse(cancelledRunAt) + 2000 - Date.now()));
+    assert(countDue(cancelledTaskId) === 0, "cancelled schedule was delivered");
+    const doc = await getSchedule(cancelledTaskId);
+    assert(doc?.status === "cancelled" && doc.attempts === 0, `unexpected record: ${JSON.stringify(doc)}`);
+  });
+
   await check("marks a permanently failing delivery as failed without retrying", async () => {
     const doc = await getSchedule(failingTaskId);
     assert(doc?.status === "failed" && doc.attempts === 1, `unexpected record: ${JSON.stringify(doc)}`);
@@ -199,6 +299,41 @@ try {
     assert(rateLimited, "the first attempt was not rate limited");
     const doc = await getSchedule(retriedTaskId);
     assert(doc?.status === "delivered" && doc.attempts === 2, `unexpected record: ${JSON.stringify(doc)}`);
+  });
+
+  console.log("  ...   waiting up to two minutes for cron runs");
+
+  await check("delivers a recurring schedule on every minute boundary", async () => {
+    for (const n of [1, 2]) {
+      await waitForSent(() => countDue(cronTaskId) === n, 70_000);
+      const second = new Date().getUTCSeconds();
+      assert(second < 10, `run ${n} arrived ${second}s past the minute`);
+    }
+    const doc = await getRecurring(cronTaskId);
+    assert(doc?.status === "active" && doc.lastDeliveredAt, `unexpected record: ${JSON.stringify(doc)}`);
+  });
+
+  await check("does not run a cancelled recurring schedule", async () => {
+    assert(countDue(cancelledCronTaskId) === 0, "cancelled cron was delivered");
+  });
+
+  await check("stops a recurring schedule after a permanent delivery error", async () => {
+    // Its first run can fall on the same minute as the second run above.
+    let doc = await getRecurring(failingCronTaskId);
+    for (const deadline = Date.now() + 70_000; doc?.status === "active" && Date.now() < deadline;) {
+      await Bun.sleep(1000);
+      doc = await getRecurring(failingCronTaskId);
+    }
+    assert(doc?.status === "failed" && String(doc.lastError).includes("403"), `unexpected record: ${JSON.stringify(doc)}`);
+    assert(await countCrons(doc._id) === 0, "cron of the failed schedule is still registered");
+  });
+
+  await check("stops recurring delivery after cancel", async () => {
+    await postUpdate(CLIENT, `/cancel ${cronTaskId}`);
+    await waitForSent((m) => m.text === `cancelled ${cronTaskId}`);
+    const doc = await getRecurring(cronTaskId);
+    assert(doc?.status === "cancelled", `unexpected record: ${JSON.stringify(doc)}`);
+    assert(await countCrons(doc._id) === 0, "cron is still registered");
   });
 
   await check("ALLOWED_BOT_IDS=* accepts any bot but not human users", async () => {

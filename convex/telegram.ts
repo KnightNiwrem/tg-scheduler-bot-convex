@@ -1,4 +1,4 @@
-import { Api } from "grammy";
+import { Api, GrammyError } from "grammy";
 import { internalAction } from "./_generated/server";
 
 export const WEBHOOK_PATH = "/telegram/webhook";
@@ -16,6 +16,11 @@ export function clientConfig() {
 }
 
 export const createApi = () => new Api(env("BOT_TOKEN"), clientConfig());
+
+/** True for Bot API errors that retrying will not fix, e.g. 403 blocked or 400 chat not found. */
+export function isPermanentError(error: unknown): boolean {
+  return error instanceof GrammyError && error.error_code < 500 && error.error_code !== 429;
+}
 
 /** Points the scheduler bot's webhook at this deployment. Run: bunx convex run telegram:setWebhook */
 export const setWebhook = internalAction({

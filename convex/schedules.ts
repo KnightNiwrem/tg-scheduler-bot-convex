@@ -1,36 +1,35 @@
 import { GrammyError } from "grammy";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import type { Doc } from "./_generated/dataModel";
 import { internalAction, internalMutation } from "./_generated/server";
 import { formatDue } from "./protocol";
-import { createApi } from "./telegram";
+import { describeTask, findTask } from "./tasks";
+import { createApi, isPermanentError } from "./telegram";
 
 const MAX_ATTEMPTS = 3;
 
-type CreateResult =
+export type CreateResult =
   | { kind: "created" }
   | { kind: "duplicate" }
-  | { kind: "conflict"; runAt: number; status: Doc<"schedules">["status"] };
+  | { kind: "conflict"; existing: string }
+  | { kind: "quota_exceeded" };
 
 /**
  * Stores a schedule and enqueues its delivery. Idempotent per (client, task):
- * repeating a request is a no-op, reusing a task id for another time is a conflict.
- * Convex mutations are serializable, so concurrent duplicates cannot both insert.
+ * repeating a request is a no-op, reusing a task id for another time (or for a
+ * recurring schedule) is a conflict. Convex mutations are serializable, so
+ * concurrent duplicates cannot both insert.
  */
 export const create = internalMutation({
   args: { clientId: v.number(), taskId: v.string(), runAt: v.number() },
   handler: async (ctx, args): Promise<CreateResult> => {
-    const existing = await ctx.db
-      .query("schedules")
-      .withIndex("by_client_task", (q) =>
-        q.eq("clientId", args.clientId).eq("taskId", args.taskId),
-      )
-      .unique();
+    const existing = await findTask(ctx, args.clientId, args.taskId);
     if (existing) {
-      return existing.runAt === args.runAt
-        ? { kind: "duplicate" }
-        : { kind: "conflict", runAt: existing.runAt, status: existing.status };
+      const same =
+        existing.kind === "once" &&
+        existing.doc.runAt === args.runAt &&
+        existing.doc.status !== "cancelled";
+      return same ? { kind: "duplicate" } : { kind: "conflict", existing: describeTask(existing) };
     }
 
     const scheduleId = await ctx.db.insert("schedules", {
@@ -113,9 +112,9 @@ export const deliver = internalAction({
 
 /** Delay before retrying, or undefined if the error is permanent (e.g. 403 blocked, 400 chat not found). */
 function retryDelayMs(error: unknown, attempts: number): number | undefined {
-  if (error instanceof GrammyError) {
-    if (error.error_code === 429) return (error.parameters.retry_after ?? 30) * 1000;
-    if (error.error_code < 500) return undefined;
+  if (isPermanentError(error)) return undefined;
+  if (error instanceof GrammyError && error.error_code === 429) {
+    return (error.parameters.retry_after ?? 30) * 1000;
   }
   // Network errors and Telegram 5xx.
   return 30_000 * attempts;

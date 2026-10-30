@@ -1,13 +1,14 @@
 # tg-scheduler-bot-convex
 
-A Telegram bot that schedules one-time notifications for **other Telegram bots**.
-A client bot sends the scheduler bot a private message with a task UUID and a time.
-When that time arrives, the scheduler sends the UUID back to the client bot. What the
-client does with it is up to the client.
+A Telegram bot that schedules one-time and recurring notifications for **other Telegram bots**.
+A client bot sends the scheduler bot a private message with a task UUID and either a time or a
+cron expression. Each time the schedule comes due, the scheduler sends the UUID back to the client
+bot. What the client does with it is up to the client.
 
 The whole backend runs on [Convex](https://convex.dev): the Telegram webhook is a Convex
 HTTP action, schedules are stored in the Convex database, and delivery runs as a Convex
-scheduled function. Telegram handling uses [grammY](https://grammy.dev). You don't need a
+scheduled function. Recurring schedules are registered at runtime with the
+[crons component](https://www.convex.dev/components/crons). Telegram handling uses [grammY](https://grammy.dev). You don't need a
 VPS, Redis, or a job queue.
 
 ```
@@ -24,25 +25,40 @@ All messages are plain text in the private chat between the client bot and the s
 |---|---|---|
 | client → scheduler | `/schedule <task-uuid> <time>` | `/schedule 8c7e3f7a-1b2c-4d5e-9f00-112233445566 2026-11-01T09:30:00Z` |
 | scheduler → client | `scheduled <task-uuid> <time in UTC>` | `scheduled 8c7e3f7a-… 2026-11-01T09:30:00.000Z` |
+| client → scheduler | `/cron <task-uuid> <cron>` | `/cron 8c7e3f7a-1b2c-4d5e-9f00-112233445566 */5 9-17 * * MON-FRI` |
+| scheduler → client | `cron <task-uuid> <cron>` | `cron 8c7e3f7a-… */5 9-17 * * MON-FRI` |
+| client → scheduler | `/cancel <task-uuid>` | `/cancel 8c7e3f7a-1b2c-4d5e-9f00-112233445566` |
+| scheduler → client | `cancelled <task-uuid>` | `cancelled 8c7e3f7a-…` |
 | scheduler → client | `error <code> <detail>` | `error time_in_past time must be in the future` |
-| scheduler → client, at `<time>` | `/due <task-uuid>` | `/due 8c7e3f7a-1b2c-4d5e-9f00-112233445566` |
+| scheduler → client, at `<time>` or on every cron run | `/due <task-uuid>` | `/due 8c7e3f7a-1b2c-4d5e-9f00-112233445566` |
 
 - `<time>` must be ISO 8601 and must include an offset: `Z` or `±HH:MM`. Seconds and milliseconds
   are optional. The time must be in the future and no more than 366 days ahead.
+- `<cron>` is a standard five-field cron expression (`minute hour day-of-month month day-of-week`),
+  evaluated in **UTC**. Ranges, steps, lists, names (`MON`, `JAN`), `L` and `#` are supported. A
+  seconds field is not accepted, so a schedule runs at most once a minute. Aliases such as `@hourly`
+  are not accepted either. A recurring schedule runs until it is cancelled.
+- `/cancel` stops a recurring schedule, or cancels a one-time schedule that has not been sent yet.
+  Cancelling a cancelled task returns `cancelled` again. A cancelled task id can't be reused.
 - Replies are sent as replies to the request message, so you can match them by `reply_to_message`
   as well as by UUID.
-- **Idempotency:** a schedule is identified by (client bot, task UUID). Sending the same request again
-  returns the same `scheduled` ack and does not create a second notification. Sending the same UUID
-  with a different time returns `error conflict`.
+- **Idempotency:** a schedule is identified by (client bot, task UUID), across both kinds. Sending the
+  same request again returns the same ack and does not create a second schedule. Sending the same
+  UUID with a different time or cron, or reusing a UUID of the other kind, returns `error conflict`.
+- A client can have at most 50 active recurring schedules. Further `/cron` requests return
+  `error quota_exceeded` until one is cancelled.
 - Error codes: `invalid_request`, `invalid_task_id`, `invalid_time`, `time_in_past`, `time_too_far`,
-  `conflict`, `internal` (the request may be retried).
+  `invalid_cron`, `conflict`, `not_found` (on `/cancel`: unknown task, or already sent),
+  `quota_exceeded`, `internal` (the request may be retried).
 - The scheduler doesn't reply to messages from bots that aren't on the allowlist, or to any message
-  that isn't a `/schedule` command. That keeps two bots from getting stuck replying to each other.
+  that isn't a `/schedule`, `/cron` or `/cancel` command. That keeps two bots from getting stuck replying to each other.
 
 A minimal grammY client:
 
 ```ts
 await bot.api.sendMessage("@your_scheduler_bot", `/schedule ${taskId} ${runAt.toISOString()}`);
+// or, every day at 09:00 UTC:
+await bot.api.sendMessage("@your_scheduler_bot", `/cron ${taskId} 0 9 * * *`);
 
 bot.hears(/^\/due ([0-9a-f-]{36})$/, async (ctx) => {
   const taskId = ctx.match[1];
@@ -126,8 +142,10 @@ bun run e2e:local
 
 `e2e:local` starts a mock Bot API server, points the local deployment at it with `BOT_API_ROOT`,
 and posts webhook updates to the HTTP action. It checks secret validation, the allowlist, error
-replies, idempotency, conflicts, on-time delivery, permanent failures, and a rate-limit retry. It
-overwrites the deployment's environment variables, so it refuses to run against non-local deployments.
+replies, idempotency, conflicts, on-time delivery, permanent failures, a rate-limit retry, recurring
+schedules (two runs on consecutive minute boundaries, cancel, quota, and stopping on a permanent
+error), and cancelling one-time schedules. The cron checks wait for real minute boundaries, so the
+run takes about three minutes. It overwrites the deployment's environment variables, so it refuses to run against non-local deployments.
 
 Other checks: `bun test` (protocol parsing) and `bun run typecheck`.
 
@@ -145,15 +163,26 @@ Other checks: `bun test` (protocol parsing) and `bun run typecheck`.
 | File | Purpose |
 |---|---|
 | `convex/http.ts` | `POST /telegram/webhook`. Checks the secret token, then hands the request to grammY's `webhookCallback` (the `std/http` adapter takes a `Request` and returns a `Response`, which is what Convex HTTP actions use). |
-| `convex/bot.ts` | grammY bot. Checks the allowlist, parses `/schedule`, stores the schedule, and replies. |
-| `convex/protocol.ts` | Message parsing and formatting, as pure functions. |
-| `convex/schedules.ts` | `create` mutation (idempotent insert plus `ctx.scheduler.runAt`), and the `deliver` action with its state transitions. |
+| `convex/bot.ts` | grammY bot. Checks the allowlist, parses `/schedule`, `/cron` and `/cancel`, runs the matching mutation, and replies. |
+| `convex/protocol.ts` | Message parsing and formatting, as pure functions. Cron expressions are validated with `cron-parser`, the parser the crons component uses. |
+| `convex/schedules.ts` | One-time schedules: `create` mutation (idempotent insert plus `ctx.scheduler.runAt`), and the `deliver` action with its state transitions. |
+| `convex/recurring.ts` | Recurring schedules: `create` mutation (idempotent insert plus a cron registered in the same transaction), and the `fire` action that each cron run calls. |
+| `convex/tasks.ts` | Task lookup shared by both kinds, and the `cancel` mutation. |
+| `convex/convex.config.ts` | Installs the [`@convex-dev/crons`](https://www.npmjs.com/package/@convex-dev/crons) component. |
 | `convex/telegram.ts` | Config helpers, plus the `setWebhook` and `status` actions. |
 
 Each schedule moves through `pending → sending → delivered`. If a send fails with a transient error
 (network, Telegram 5xx, or 429, which honors `retry_after`), the schedule goes back to `pending` and is
 retried, up to 3 attempts in total. If it fails with a permanent error (for example 403 because the
-client blocked the scheduler), it is marked `failed` with `lastError`.
+client blocked the scheduler), it is marked `failed` with `lastError`. Cancelling moves a `pending`
+schedule to `cancelled`.
+
+Recurring schedules are `active` until they are `cancelled` by the client or `failed`. Both remove the
+cron. Each run sends `/due` once and records `lastDeliveredAt`. A transient error is recorded in
+`lastError` and not retried, because the next run is at most a few minutes away and a retry could
+overlap it. A permanent error stops the schedule (`failed`), so a client that blocked the scheduler
+doesn't get retried forever. If a run is still in progress when the next one is due, the crons
+component skips the new run.
 
 ## Trade-offs and limitations (first iteration)
 
@@ -172,14 +201,17 @@ client blocked the scheduler), it is marked `failed` with `lastError`.
   is also the id of its private chat. Telegram's docs describe *starting* a bot-to-bot chat with
   `@username`. This service only sends in chats the client has already started, so a username change
   doesn't break delivery.
-- **Trust model.** Bots on the allowlist are trusted. There is no per-client quota or rate limit yet,
-  and an allowlisted bot can create as many schedules as Convex allows (1M outstanding scheduled
-  functions per deployment). With `ALLOWED_BOT_IDS='*'`, *any* bot can do this. Before running an
-  open instance, add a per-client quota.
+- **Trust model.** Bots on the allowlist are trusted. Recurring schedules are capped at 50 active per
+  client, because they run forever. One-time schedules have no quota or rate limit yet, and an
+  allowlisted bot can create as many as Convex allows (1M outstanding scheduled functions per
+  deployment). With `ALLOWED_BOT_IDS='*'`, *any* bot can do this, and any number of bots can each
+  hold 50 every-minute crons. Before running an open instance, add a global quota.
+- **Cancel races a run that already started.** A `/due` that is already being sent when `/cancel`
+  arrives is still delivered.
 - **A new bot instance per request.** Each webhook request builds a new grammY `Bot`. Bot info from `getMe`
   is cached while Convex reuses the isolate, so most updates don't need an extra API call.
 
-Not in this iteration: recurring/cron schedules, cancel or list commands, admin commands, and stronger
+Not in this iteration: a list command, time zones other than UTC for cron, admin commands, and stronger
 delivery guarantees.
 
 ## License
