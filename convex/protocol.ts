@@ -1,39 +1,51 @@
-// Wire protocol between client bots and the scheduler bot. Pure functions only,
-// so this module can be unit tested outside of Convex.
+// Wire protocol between client bots and the scheduler bot. Every message is a
+// single JSON object in the private chat, discriminated by `type`. Pure
+// functions only, so this module can be unit tested outside of Convex.
 //
-//   request:      /schedule <task-uuid> <run-at>
-//   ack:          scheduled <task-uuid> <run-at as ISO 8601 UTC>
-//   request:      /cron <task-uuid> <minute> <hour> <day-of-month> <month> <day-of-week>
-//   ack:          cron <task-uuid> <cron expression>
-//   request:      /cancel <task-uuid>
-//   ack:          cancelled <task-uuid>
-//   error:        error <code> <human readable detail>
-//   notification: /due <task-uuid>
+//   client -> scheduler
+//     {"type":"schedule","requestId":"<uuid>","taskId":"<uuid>","runAt":"<ISO 8601>"}
+//     {"type":"cron","requestId":"<uuid>","taskId":"<uuid>","cron":"<5-field cron>"}
+//     {"type":"cancel","requestId":"<uuid>","taskId":"<uuid>"}
+//   scheduler -> client
+//     {"type":"ack","requestId":"<uuid>","op":"schedule","taskId":"<uuid>","runAt":"<ISO UTC>"}
+//     {"type":"ack","requestId":"<uuid>","op":"cron","taskId":"<uuid>","cron":"<cron>"}
+//     {"type":"ack","requestId":"<uuid>","op":"cancel","taskId":"<uuid>"}
+//     {"type":"error","requestId":"<uuid>"|null,"code":"<code>","detail":"<text>"}
+//     {"type":"due","deliveryId":"<id>","taskId":"<uuid>","scheduledFor":"<ISO UTC>"}
 
 import parser from "cron-parser";
 
 export const MAX_SCHEDULE_AHEAD_MS = 366 * 24 * 60 * 60 * 1000;
 const MAX_CRON_LENGTH = 100;
 
-export type Command = "schedule" | "cron" | "cancel";
-const COMMANDS: readonly Command[] = ["schedule", "cron", "cancel"];
+export type RequestType = "schedule" | "cron" | "cancel";
+const REQUEST_TYPES: readonly string[] = ["schedule", "cron", "cancel"] satisfies RequestType[];
 
 export type ErrorCode =
-  | "invalid_request"
+  | "invalid_request_id"
   | "invalid_task_id"
   | "invalid_time"
   | "time_in_past"
   | "time_too_far"
   | "invalid_cron"
   | "conflict"
+  | "request_id_reused"
   | "not_found"
   | "quota_exceeded"
   | "internal";
 
-type ParseError = { ok: false; code: ErrorCode; detail: string };
-export type ParseResult = { ok: true; taskId: string; runAt: number } | ParseError;
-export type CronParseResult = { ok: true; taskId: string; cronspec: string } | ParseError;
-export type CancelParseResult = { ok: true; taskId: string } | ParseError;
+/** A validated request. Ids are lowercased, times are epoch milliseconds, cron whitespace is normalized. */
+export type Request =
+  | { type: "schedule"; requestId: string; taskId: string; runAt: number }
+  | { type: "cron"; requestId: string; taskId: string; cronspec: string }
+  | { type: "cancel"; requestId: string; taskId: string };
+
+export type ParseResult =
+  | { kind: "request"; request: Request }
+  | { kind: "invalid"; requestId: string | null; code: ErrorCode; detail: string }
+  // Not addressed to the scheduler. Ignored without a reply, so two bots
+  // cannot get stuck replying to each other.
+  | { kind: "ignored" };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -42,88 +54,97 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const TIME_RE =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|([+-])(\d{2}):(\d{2}))$/;
 
+const isUuid = (value: unknown): value is string =>
+  typeof value === "string" && UUID_RE.test(value);
+
 /**
- * Returns the command `text` is addressed to, optionally in the
- * `/schedule@SchedulerBot` form, or null. Messages without a command are
- * ignored by the bot.
+ * Parses a message from a client bot. Only a JSON object whose `type` is a
+ * request type gets a reply; anything else, including the scheduler's own
+ * message types and malformed JSON, is ignored. Unknown fields are ignored.
+ *
+ * Checks that depend on the current time (`time_in_past`, `time_too_far`) are
+ * not done here: a retried request must get its original ack even after its
+ * time has passed, so they run after the duplicate checks (see checkRunAt).
  */
-export function parseCommand(text: string, botUsername: string): Command | null {
-  const head = text.trimStart().split(/\s/, 1)[0] ?? "";
-  for (const command of COMMANDS) {
-    if (
-      head === `/${command}` ||
-      head.toLowerCase() === `/${command}@${botUsername.toLowerCase()}`
-    ) {
-      return command;
-    }
+export function parseRequest(text: string): ParseResult {
+  const fields = parseObject(text);
+  const type = fields?.type;
+  if (!fields || typeof type !== "string" || !REQUEST_TYPES.includes(type)) {
+    return { kind: "ignored" };
   }
-  return null;
+
+  if (!isUuid(fields.requestId)) {
+    return invalid(null, "invalid_request_id", "requestId must be a UUID");
+  }
+  const requestId = fields.requestId.toLowerCase();
+  if (!isUuid(fields.taskId)) {
+    return invalid(requestId, "invalid_task_id", "taskId must be a UUID");
+  }
+  const ids = { requestId, taskId: fields.taskId.toLowerCase() };
+
+  switch (type as RequestType) {
+    case "schedule":
+      return parseSchedule(ids, fields.runAt);
+    case "cron":
+      return parseCron(ids, fields.cron);
+    case "cancel":
+      return { kind: "request", request: { type: "cancel", ...ids } };
+  }
 }
 
-export function parseScheduleRequest(text: string, now: number): ParseResult {
-  const parts = text.trim().split(/\s+/);
-  if (parts.length !== 3) {
-    return {
-      ok: false,
-      code: "invalid_request",
-      detail: "expected: /schedule <task-uuid> <ISO-8601 time with offset>",
-    };
-  }
-  const [, rawTaskId, rawTime] = parts as [string, string, string];
+type Ids = { requestId: string; taskId: string };
 
-  if (!UUID_RE.test(rawTaskId)) {
-    return { ok: false, code: "invalid_task_id", detail: "task id must be a UUID" };
-  }
+const invalid = (requestId: string | null, code: ErrorCode, detail: string): ParseResult => ({
+  kind: "invalid",
+  requestId,
+  code,
+  detail,
+});
 
-  const runAt = parseIsoTime(rawTime);
+/** Parses `text` as a JSON object, or returns null. */
+function parseObject(text: string): Record<string, unknown> | null {
+  try {
+    const value: unknown = JSON.parse(text);
+    return typeof value === "object" && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseSchedule(ids: Ids, rawRunAt: unknown): ParseResult {
+  const runAt = typeof rawRunAt === "string" ? parseIsoTime(rawRunAt) : null;
   if (runAt === null) {
-    return {
-      ok: false,
-      code: "invalid_time",
-      detail: "time must be ISO 8601 with an offset, e.g. 2026-11-01T09:30:00Z",
-    };
+    return invalid(
+      ids.requestId,
+      "invalid_time",
+      "runAt must be ISO 8601 with an offset, e.g. 2026-11-01T09:30:00Z",
+    );
   }
-  if (runAt <= now) {
-    return { ok: false, code: "time_in_past", detail: "time must be in the future" };
-  }
-  if (runAt - now > MAX_SCHEDULE_AHEAD_MS) {
-    return { ok: false, code: "time_too_far", detail: "time must be within 366 days" };
-  }
-
-  return { ok: true, taskId: rawTaskId.toLowerCase(), runAt };
+  return { kind: "request", request: { type: "schedule", ...ids, runAt } };
 }
 
-/**
- * Parses a recurring request. The cron expression must have exactly five
- * fields (minute to day of week, evaluated in UTC). A seconds field is not
- * accepted, so a schedule never fires more than once a minute.
- */
-export function parseCronRequest(text: string): CronParseResult {
-  const [, rawTaskId, ...fields] = text.trim().split(/\s+/);
-  if (rawTaskId === undefined || fields.length === 0) {
-    return {
-      ok: false,
-      code: "invalid_request",
-      detail: "expected: /cron <task-uuid> <minute> <hour> <day-of-month> <month> <day-of-week>",
-    };
-  }
-  if (!UUID_RE.test(rawTaskId)) {
-    return { ok: false, code: "invalid_task_id", detail: "task id must be a UUID" };
-  }
-
-  const cronspec = fields.join(" ");
-  if (fields.length !== 5 || cronspec.length > MAX_CRON_LENGTH) {
-    return {
-      ok: false,
-      code: "invalid_cron",
-      detail: "cron must have 5 fields: minute hour day-of-month month day-of-week (no seconds)",
-    };
+function parseCron(ids: Ids, rawCron: unknown): ParseResult {
+  const cronspec = typeof rawCron === "string" ? normalizeCron(rawCron) : null;
+  if (cronspec === null) {
+    return invalid(
+      ids.requestId,
+      "invalid_cron",
+      "cron must have 5 fields: minute hour day-of-month month day-of-week (no seconds)",
+    );
   }
   if (!isValidCron(cronspec)) {
-    return { ok: false, code: "invalid_cron", detail: `cron "${cronspec}" is not valid` };
+    return invalid(ids.requestId, "invalid_cron", `cron "${cronspec}" is not valid`);
   }
+  return { kind: "request", request: { type: "cron", ...ids, cronspec } };
+}
 
-  return { ok: true, taskId: rawTaskId.toLowerCase(), cronspec };
+/** Collapses whitespace. Returns null unless there are exactly five fields (no seconds field). */
+function normalizeCron(raw: string): string | null {
+  const fields = raw.trim().split(/\s+/);
+  const cronspec = fields.join(" ");
+  return fields.length === 5 && cronspec.length <= MAX_CRON_LENGTH ? cronspec : null;
 }
 
 /** True if a five-field cron expression parses and has an upcoming run. */
@@ -137,16 +158,22 @@ function isValidCron(cronspec: string): boolean {
   }
 }
 
-export function parseCancelRequest(text: string): CancelParseResult {
-  const parts = text.trim().split(/\s+/);
-  const rawTaskId = parts[1];
-  if (parts.length !== 2 || rawTaskId === undefined) {
-    return { ok: false, code: "invalid_request", detail: "expected: /cancel <task-uuid>" };
+/** The most recent run of a cron at or before `now`, in epoch milliseconds (UTC). */
+export function previousRun(cronspec: string, now: number): number {
+  // prev() is strictly before currentDate, so a run exactly at `now` counts.
+  return parser
+    .parseExpression(cronspec, { tz: "UTC", currentDate: new Date(now + 1) })
+    .prev()
+    .getTime();
+}
+
+/** Checks the window a one-time schedule must fall in. Returns an error, or null if `runAt` is fine. */
+export function checkRunAt(runAt: number, now: number): { code: ErrorCode; detail: string } | null {
+  if (runAt <= now) return { code: "time_in_past", detail: "runAt must be in the future" };
+  if (runAt - now > MAX_SCHEDULE_AHEAD_MS) {
+    return { code: "time_too_far", detail: "runAt must be within 366 days" };
   }
-  if (!UUID_RE.test(rawTaskId)) {
-    return { ok: false, code: "invalid_task_id", detail: "task id must be a UUID" };
-  }
-  return { ok: true, taskId: rawTaskId.toLowerCase() };
+  return null;
 }
 
 /** Parses a strict ISO 8601 timestamp into epoch milliseconds, or null. */
@@ -178,13 +205,49 @@ export function parseIsoTime(value: string): number | null {
   return local - offsetMs;
 }
 
-export const formatAck = (taskId: string, runAt: number) =>
-  `scheduled ${taskId} ${new Date(runAt).toISOString()}`;
+/**
+ * Identifies a request by its content, ignoring the request id. A request id
+ * that is reused with a different fingerprint is rejected.
+ */
+export function fingerprint(request: Request): string {
+  switch (request.type) {
+    case "schedule":
+      return JSON.stringify([request.type, request.taskId, request.runAt]);
+    case "cron":
+      return JSON.stringify([request.type, request.taskId, request.cronspec]);
+    case "cancel":
+      return JSON.stringify([request.type, request.taskId]);
+  }
+}
 
-export const formatCronAck = (taskId: string, cronspec: string) => `cron ${taskId} ${cronspec}`;
+const iso = (ms: number) => new Date(ms).toISOString();
 
-export const formatCancelled = (taskId: string) => `cancelled ${taskId}`;
+export function formatAck(request: Request): string {
+  const { requestId, type: op, taskId } = request;
+  switch (request.type) {
+    case "schedule":
+      return JSON.stringify({ type: "ack", requestId, op, taskId, runAt: iso(request.runAt) });
+    case "cron":
+      return JSON.stringify({ type: "ack", requestId, op, taskId, cron: request.cronspec });
+    case "cancel":
+      return JSON.stringify({ type: "ack", requestId, op, taskId });
+  }
+}
 
-export const formatError = (code: ErrorCode, detail: string) => `error ${code} ${detail}`;
+export const formatError = (requestId: string | null, code: ErrorCode, detail: string) =>
+  JSON.stringify({ type: "error", requestId, code, detail });
 
-export const formatDue = (taskId: string) => `/due ${taskId}`;
+/**
+ * Identifies one notification. The same occurrence of a task always gets the
+ * same id, including when it is sent again, so clients can drop duplicates.
+ */
+export const deliveryId = (taskId: string, scheduledFor: number) =>
+  `${taskId}@${iso(scheduledFor)}`;
+
+export const formatDue = (taskId: string, scheduledFor: number) =>
+  JSON.stringify({
+    type: "due",
+    deliveryId: deliveryId(taskId, scheduledFor),
+    taskId,
+    scheduledFor: iso(scheduledFor),
+  });
