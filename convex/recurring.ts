@@ -1,9 +1,8 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { internalAction, internalMutation, internalQuery } from "./_generated/server";
-import { formatDue } from "./protocol";
-import type { CreateResult } from "./schedules";
-import { crons, describeTask, findTask } from "./tasks";
+import { internalAction, internalMutation, type MutationCtx } from "./_generated/server";
+import { formatDue, previousRun } from "./protocol";
+import { conflict, crons, findTask, type Rejection } from "./tasks";
 import { createApi, isPermanentError } from "./telegram";
 
 /** Recurring schedules fire forever, so each client may only have this many active at once. */
@@ -14,39 +13,64 @@ export const MAX_ACTIVE_PER_CLIENT = 50;
  * task), like one-time schedules. The cron is registered in the same
  * transaction, so a stored schedule always has a cron and vice versa.
  */
-export const create = internalMutation({
-  args: { clientId: v.number(), taskId: v.string(), cronspec: v.string() },
-  handler: async (ctx, args): Promise<CreateResult> => {
-    const existing = await findTask(ctx, args.clientId, args.taskId);
-    if (existing) {
-      const same =
-        existing.kind === "cron" &&
-        existing.doc.cronspec === args.cronspec &&
-        existing.doc.status === "active";
-      return same ? { kind: "duplicate" } : { kind: "conflict", existing: describeTask(existing) };
-    }
+export async function createRecurring(
+  ctx: MutationCtx,
+  clientId: number,
+  taskId: string,
+  cronspec: string,
+): Promise<Rejection> {
+  const existing = await findTask(ctx, clientId, taskId);
+  if (existing) {
+    const same =
+      existing.kind === "cron" &&
+      existing.doc.cronspec === cronspec &&
+      existing.doc.status === "active";
+    return same ? null : conflict(existing);
+  }
 
-    const active = await ctx.db
-      .query("recurring")
-      .withIndex("by_client_status", (q) => q.eq("clientId", args.clientId).eq("status", "active"))
-      .take(MAX_ACTIVE_PER_CLIENT);
-    if (active.length >= MAX_ACTIVE_PER_CLIENT) return { kind: "quota_exceeded" };
+  const active = await ctx.db
+    .query("recurring")
+    .withIndex("by_client_status", (q) => q.eq("clientId", clientId).eq("status", "active"))
+    .take(MAX_ACTIVE_PER_CLIENT);
+  if (active.length >= MAX_ACTIVE_PER_CLIENT) {
+    return {
+      code: "quota_exceeded",
+      detail: `at most ${MAX_ACTIVE_PER_CLIENT} recurring schedules can be active, cancel one first`,
+    };
+  }
 
-    const recurringId = await ctx.db.insert("recurring", { ...args, status: "active" });
-    const cronId = await crons.register(
-      ctx,
-      { kind: "cron", cronspec: args.cronspec, tz: "UTC" },
-      internal.recurring.fire,
-      { recurringId },
-    );
-    await ctx.db.patch("recurring", recurringId, { cronId });
-    return { kind: "created" };
-  },
-});
+  const recurringId = await ctx.db.insert("recurring", {
+    clientId,
+    taskId,
+    cronspec,
+    status: "active",
+  });
+  const cronId = await crons.register(
+    ctx,
+    { kind: "cron", cronspec, tz: "UTC" },
+    internal.recurring.fire,
+    { recurringId },
+  );
+  await ctx.db.patch("recurring", recurringId, { cronId });
+  return null;
+}
 
-export const get = internalQuery({
+/**
+ * Claims the run of an active schedule that is due now. The crons component
+ * does not say which run it is calling for, so it is taken to be the latest
+ * one at or before now. Returns null if that run was already claimed, so each
+ * run is sent at most once, and always with the same delivery id.
+ */
+export const claimRun = internalMutation({
   args: { recurringId: v.id("recurring") },
-  handler: (ctx, { recurringId }) => ctx.db.get("recurring", recurringId),
+  handler: async (ctx, { recurringId }) => {
+    const schedule = await ctx.db.get("recurring", recurringId);
+    if (schedule?.status !== "active") return null;
+    const scheduledFor = previousRun(schedule.cronspec, Date.now());
+    if (schedule.lastRunFor !== undefined && scheduledFor <= schedule.lastRunFor) return null;
+    await ctx.db.patch("recurring", recurringId, { lastRunFor: scheduledFor });
+    return { clientId: schedule.clientId, taskId: schedule.taskId, scheduledFor };
+  },
 });
 
 export const markDelivered = internalMutation({
@@ -81,11 +105,14 @@ export const markFailed = internalMutation({
 export const fire = internalAction({
   args: { recurringId: v.id("recurring") },
   handler: async (ctx, { recurringId }): Promise<void> => {
-    const schedule = await ctx.runQuery(internal.recurring.get, { recurringId });
-    if (schedule?.status !== "active") return;
+    const schedule = await ctx.runMutation(internal.recurring.claimRun, { recurringId });
+    if (!schedule) return;
 
     try {
-      await createApi().sendMessage(schedule.clientId, formatDue(schedule.taskId));
+      await createApi().sendMessage(
+        schedule.clientId,
+        formatDue(schedule.taskId, schedule.scheduledFor),
+      );
     } catch (error) {
       console.error(
         `Recurring delivery of ${schedule.taskId} to ${schedule.clientId} failed:`,

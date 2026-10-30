@@ -2,7 +2,7 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 export default defineSchema({
-  // One-time schedules (/schedule).
+  // One-time schedules ("schedule" requests).
   schedules: defineTable({
     // Telegram user id of the requesting bot. In a private chat this is also
     // the chat id the notification is sent to.
@@ -24,7 +24,7 @@ export default defineSchema({
     deliveredAt: v.optional(v.number()),
   }).index("by_client_task", ["clientId", "taskId"]),
 
-  // Recurring schedules (/cron). Each active one has a cron registered in the
+  // Recurring schedules ("cron" requests). Each active one has a cron registered in the
   // crons component.
   recurring: defineTable({
     clientId: v.number(),
@@ -35,9 +35,24 @@ export default defineSchema({
     cronId: v.optional(v.string()),
     // active -> cancelled (by the client) | failed (permanent delivery error)
     status: v.union(v.literal("active"), v.literal("cancelled"), v.literal("failed")),
+    // Scheduled time of the latest run that was claimed for sending. Each run
+    // is sent at most once, with a delivery id derived from this time.
+    lastRunFor: v.optional(v.number()),
     lastDeliveredAt: v.optional(v.number()),
     lastError: v.optional(v.string()),
   })
     .index("by_client_task", ["clientId", "taskId"])
     .index("by_client_status", ["clientId", "status"]),
+
+  // Acks of applied requests, by client-generated request id, so a retried
+  // request gets the same ack. Pruned after REQUEST_RETENTION_MS.
+  requests: defineTable({
+    clientId: v.number(),
+    requestId: v.string(),
+    // See fingerprint() in protocol.ts. A request id reused for different
+    // content is rejected.
+    fingerprint: v.string(),
+    // The ack exactly as it was sent.
+    response: v.string(),
+  }).index("by_client_request", ["clientId", "requestId"]),
 });

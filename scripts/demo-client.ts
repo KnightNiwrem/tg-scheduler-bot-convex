@@ -19,16 +19,27 @@ if (!token || !scheduler) {
 
 const bot = new Bot(token);
 const taskId = crypto.randomUUID();
+const requestId = crypto.randomUUID();
 const runAt = new Date(Date.now() + delaySeconds * 1000).toISOString();
+// Delivery ids already handled. A real client keeps these in its database.
+const handled = new Set<string>();
 
 bot.on("message:text", async (ctx) => {
   if (ctx.from.username?.toLowerCase() !== scheduler.toLowerCase()) return;
   console.log(`<- ${ctx.msg.text}`);
-  if (ctx.msg.text === `/due ${taskId}`) {
+  let message: { type?: string; requestId?: string; deliveryId?: string; taskId?: string };
+  try {
+    message = JSON.parse(ctx.msg.text);
+  } catch {
+    return;
+  }
+  if (message.type === "due" && message.taskId === taskId && message.deliveryId) {
+    if (handled.has(message.deliveryId)) return; // a duplicate of a run already handled
+    handled.add(message.deliveryId);
     const lateBy = (Date.now() - Date.parse(runAt)) / 1000;
     console.log(`Success: notification arrived ${lateBy.toFixed(1)}s after the scheduled time.`);
     await bot.stop();
-  } else if (ctx.msg.text.startsWith("error")) {
+  } else if (message.type === "error" && message.requestId === requestId) {
     console.error("Scheduler rejected the request.");
     await bot.stop();
     process.exitCode = 1;
@@ -38,7 +49,8 @@ bot.on("message:text", async (ctx) => {
 const me = await bot.api.getMe();
 console.log(`Client bot @${me.username} (id ${me.id}); add this id to ALLOWED_BOT_IDS.`);
 
-const text = `/schedule ${taskId} ${runAt}`;
+// Resending this exact text (same requestId) is always safe.
+const text = JSON.stringify({ type: "schedule", requestId, taskId, runAt });
 await bot.api.sendMessage(`@${scheduler}`, text);
 console.log(`-> ${text}`);
 

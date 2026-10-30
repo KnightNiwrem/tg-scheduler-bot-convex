@@ -2,19 +2,7 @@ import { Bot } from "grammy";
 import type { User, UserFromGetMe } from "grammy/types";
 import { internal } from "./_generated/api";
 import type { ActionCtx } from "./_generated/server";
-import {
-  type Command,
-  formatAck,
-  formatCancelled,
-  formatCronAck,
-  formatError,
-  parseCancelRequest,
-  parseCommand,
-  parseCronRequest,
-  parseScheduleRequest,
-} from "./protocol";
-import { MAX_ACTIVE_PER_CLIENT } from "./recurring";
-import type { CreateResult } from "./schedules";
+import { formatError, parseRequest, type Request } from "./protocol";
 import { clientConfig, env } from "./telegram";
 
 // Kept for as long as Convex reuses the isolate, which saves a getMe call per update.
@@ -37,16 +25,19 @@ export async function createBot(ctx: ActionCtx) {
   });
 
   safe.chatType("private").on("message:text", async (c) => {
-    // Unauthorized senders and anything that is not a command are ignored
+    // Unauthorized senders and anything that is not a request are ignored
     // without a reply, so the bot cannot be drawn into a reply loop.
     if (!isAllowed(c.from)) {
       console.warn(`Ignoring message from unauthorized sender ${c.from.id}`);
       return;
     }
-    const command = parseCommand(c.msg.text, c.me.username);
-    if (!command) return;
+    const parsed = parseRequest(c.msg.text);
+    if (parsed.kind === "ignored") return;
 
-    const reply = await handlers[command](ctx, c.from.id, c.msg.text);
+    const reply =
+      parsed.kind === "invalid"
+        ? formatError(parsed.requestId, parsed.code, parsed.detail)
+        : await handle(ctx, c.from.id, parsed.request);
     await c.reply(reply, {
       reply_parameters: { message_id: c.msg.message_id, allow_sending_without_reply: true },
     });
@@ -55,84 +46,12 @@ export async function createBot(ctx: ActionCtx) {
   return bot;
 }
 
-type Handler = (ctx: ActionCtx, clientId: number, text: string) => Promise<string>;
-
-const handlers: Record<Command, Handler> = {
-  async schedule(ctx, clientId, text) {
-    const parsed = parseScheduleRequest(text, Date.now());
-    if (!parsed.ok) return formatError(parsed.code, parsed.detail);
-    return await store(
-      parsed.taskId,
-      () =>
-        ctx.runMutation(internal.schedules.create, {
-          clientId,
-          taskId: parsed.taskId,
-          runAt: parsed.runAt,
-        }),
-      () => formatAck(parsed.taskId, parsed.runAt),
-    );
-  },
-
-  async cron(ctx, clientId, text) {
-    const parsed = parseCronRequest(text);
-    if (!parsed.ok) return formatError(parsed.code, parsed.detail);
-    return await store(
-      parsed.taskId,
-      () =>
-        ctx.runMutation(internal.recurring.create, {
-          clientId,
-          taskId: parsed.taskId,
-          cronspec: parsed.cronspec,
-        }),
-      () => formatCronAck(parsed.taskId, parsed.cronspec),
-    );
-  },
-
-  async cancel(ctx, clientId, text) {
-    const parsed = parseCancelRequest(text);
-    if (!parsed.ok) return formatError(parsed.code, parsed.detail);
-    try {
-      const result = await ctx.runMutation(internal.tasks.cancel, {
-        clientId,
-        taskId: parsed.taskId,
-      });
-      switch (result.kind) {
-        case "cancelled":
-          return formatCancelled(parsed.taskId);
-        case "not_found":
-          return formatError("not_found", `no schedule for task ${parsed.taskId}`);
-        case "not_cancellable":
-          return formatError(
-            "not_found",
-            `task ${parsed.taskId} is no longer pending (${result.status})`,
-          );
-      }
-    } catch (error) {
-      console.error("Failed to cancel schedule:", error);
-      return formatError("internal", "could not cancel the schedule, try again later");
-    }
-  },
-};
-
-/** Runs a create mutation and turns its result into a reply. */
-async function store(taskId: string, create: () => Promise<CreateResult>, ack: () => string) {
+async function handle(ctx: ActionCtx, clientId: number, request: Request): Promise<string> {
   try {
-    const result = await create();
-    switch (result.kind) {
-      case "created":
-      case "duplicate":
-        return ack();
-      case "conflict":
-        return formatError("conflict", `task ${taskId} is already scheduled ${result.existing}`);
-      case "quota_exceeded":
-        return formatError(
-          "quota_exceeded",
-          `at most ${MAX_ACTIVE_PER_CLIENT} recurring schedules can be active, cancel one first`,
-        );
-    }
+    return await ctx.runMutation(internal.requests.handle, { clientId, request });
   } catch (error) {
-    console.error("Failed to store schedule:", error);
-    return formatError("internal", "could not store the schedule, try again later");
+    console.error(`Failed to handle ${request.type} request ${request.requestId}:`, error);
+    return formatError(request.requestId, "internal", "could not handle the request, try again");
   }
 }
 
