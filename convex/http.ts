@@ -10,7 +10,7 @@ http.route({
   path: WEBHOOK_PATH,
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    const secretToken = env("TELEGRAM_WEBHOOK_SECRET");
+    const secretToken = env("BOT_WEBHOOK_SECRET");
     // grammY checks the secret too, but only after calling getMe. Reject
     // forged requests before they cost a Telegram API call.
     if (request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== secretToken) {

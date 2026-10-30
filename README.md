@@ -69,14 +69,16 @@ two bots from [@BotFather](https://t.me/BotFather): the scheduler, and a client 
 3. **Configure the deployment** (these values are stored in Convex, not in local files):
 
    ```sh
-   bunx convex env set TELEGRAM_BOT_TOKEN '<scheduler bot token>'
-   bunx convex env set TELEGRAM_WEBHOOK_SECRET "$(openssl rand -hex 32)"
+   bunx convex env set BOT_TOKEN '<scheduler bot token>'
+   bunx convex env set BOT_WEBHOOK_SECRET "$(openssl rand -hex 32)"
    bunx convex env set ALLOWED_BOT_IDS '<client bot id>,<another bot id>'
    ```
 
    A bot's numeric id is the part of its token before the `:`. The demo client also prints it.
    The allowlist is checked against the sender's Telegram user id. For a quick manual test you
    can add your own user id and send `/schedule …` to the scheduler from your Telegram app.
+   Set `ALLOWED_BOT_IDS='*'` to accept requests from any bot. Human users are still refused in
+   that mode.
 
 4. **Register the webhook.** The URL is built from the deployment's `CONVEX_SITE_URL`:
 
@@ -90,7 +92,7 @@ two bots from [@BotFather](https://t.me/BotFather): the scheduler, and a client 
 
 ```sh
 bunx convex deploy
-bunx convex env set --prod TELEGRAM_BOT_TOKEN '…'   # and the other two variables
+bunx convex env set --prod BOT_TOKEN '…'   # and the other two variables
 bunx convex run --prod telegram:setWebhook
 ```
 
@@ -122,7 +124,7 @@ CONVEX_AGENT_MODE=anonymous bunx convex dev
 bun run e2e:local
 ```
 
-`e2e:local` starts a mock Bot API server, points the local deployment at it with `TELEGRAM_API_ROOT`,
+`e2e:local` starts a mock Bot API server, points the local deployment at it with `BOT_API_ROOT`,
 and posts webhook updates to the HTTP action. It checks secret validation, the allowlist, error
 replies, idempotency, conflicts, on-time delivery, permanent failures, and a rate-limit retry. It
 overwrites the deployment's environment variables, so it refuses to run against non-local deployments.
@@ -133,10 +135,10 @@ Other checks: `bun test` (protocol parsing) and `bun run typecheck`.
 
 | Variable | Required | Description |
 |---|---|---|
-| `TELEGRAM_BOT_TOKEN` | yes | Scheduler bot token |
-| `TELEGRAM_WEBHOOK_SECRET` | yes | 1–256 chars of `A-Z a-z 0-9 _ -`. Telegram sends it with every update, and requests without it get a 401 |
-| `ALLOWED_BOT_IDS` | yes | Comma-separated Telegram user ids allowed to schedule |
-| `TELEGRAM_API_ROOT` | no | Bot API base URL, e.g. a [local Bot API server](https://github.com/tdlib/telegram-bot-api). Defaults to `https://api.telegram.org` |
+| `BOT_TOKEN` | yes | Scheduler bot token |
+| `BOT_WEBHOOK_SECRET` | yes | 1–256 chars of `A-Z a-z 0-9 _ -`. Telegram sends it with every update, and requests without it get a 401 |
+| `ALLOWED_BOT_IDS` | yes | Comma-separated Telegram user ids allowed to schedule, or `*` for any bot |
+| `BOT_API_ROOT` | no | Bot API base URL, e.g. a [local Bot API server](https://github.com/tdlib/telegram-bot-api). Defaults to `https://api.telegram.org` |
 
 ## How it works
 
@@ -172,7 +174,8 @@ client blocked the scheduler), it is marked `failed` with `lastError`.
   doesn't break delivery.
 - **Trust model.** Bots on the allowlist are trusted. There is no per-client quota or rate limit yet,
   and an allowlisted bot can create as many schedules as Convex allows (1M outstanding scheduled
-  functions per deployment).
+  functions per deployment). With `ALLOWED_BOT_IDS='*'`, *any* bot can do this. Before running an
+  open instance, add a per-client quota.
 - **A new bot instance per request.** Each webhook request builds a new grammY `Bot`. Bot info from `getMe`
   is cached while Convex reuses the isolate, so most updates don't need an extra API call.
 

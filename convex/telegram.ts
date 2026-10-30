@@ -9,13 +9,13 @@ export function env(name: string): string {
   return value;
 }
 
-/** grammY client options. TELEGRAM_API_ROOT is optional (local Bot API server or the local e2e test). */
+/** grammY client options. BOT_API_ROOT is optional (local Bot API server or the local e2e test). */
 export function clientConfig() {
-  const apiRoot = process.env.TELEGRAM_API_ROOT;
+  const apiRoot = process.env.BOT_API_ROOT;
   return apiRoot ? { apiRoot } : undefined;
 }
 
-export const createApi = () => new Api(env("TELEGRAM_BOT_TOKEN"), clientConfig());
+export const createApi = () => new Api(env("BOT_TOKEN"), clientConfig());
 
 /** Points the scheduler bot's webhook at this deployment. Run: bunx convex run telegram:setWebhook */
 export const setWebhook = internalAction({
@@ -23,7 +23,7 @@ export const setWebhook = internalAction({
   handler: async () => {
     const api = createApi();
     await api.setWebhook(`${env("CONVEX_SITE_URL")}${WEBHOOK_PATH}`, {
-      secret_token: env("TELEGRAM_WEBHOOK_SECRET"),
+      secret_token: env("BOT_WEBHOOK_SECRET"),
       allowed_updates: ["message"],
     });
     return await api.getWebhookInfo();

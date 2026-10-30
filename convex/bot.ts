@@ -1,5 +1,5 @@
 import { Bot } from "grammy";
-import type { UserFromGetMe } from "grammy/types";
+import type { User, UserFromGetMe } from "grammy/types";
 import { internal } from "./_generated/api";
 import type { ActionCtx } from "./_generated/server";
 import {
@@ -15,16 +15,16 @@ let botInfo: UserFromGetMe | undefined;
 
 /** Builds a grammY bot bound to the Convex context of the current webhook request. */
 export async function createBot(ctx: ActionCtx) {
-  const bot = new Bot(env("TELEGRAM_BOT_TOKEN"), { botInfo, client: clientConfig() });
+  const bot = new Bot(env("BOT_TOKEN"), { botInfo, client: clientConfig() });
   await bot.init();
   botInfo = bot.botInfo;
 
-  const allowed = parseAllowlist(env("ALLOWED_BOT_IDS"));
+  const isAllowed = parseAllowlist(env("ALLOWED_BOT_IDS"));
 
   bot.chatType("private").on("message:text", async (c) => {
     // Unauthorized senders and anything that is not a /schedule request are
     // ignored without a reply, so the bot cannot be drawn into a reply loop.
-    if (!allowed.has(c.from.id)) {
+    if (!isAllowed(c.from)) {
       console.warn(`Ignoring message from unauthorized sender ${c.from.id}`);
       return;
     }
@@ -69,10 +69,16 @@ async function handleScheduleRequest(ctx: ActionCtx, clientId: number, text: str
   }
 }
 
-function parseAllowlist(value: string): Set<number> {
+/**
+ * `*` allows any bot (but not human users). Otherwise a comma-separated list of
+ * Telegram user ids, which may include humans for manual testing.
+ */
+function parseAllowlist(value: string): (sender: User) => boolean {
+  if (value.trim() === "*") return (sender) => sender.is_bot;
   const ids = value.split(",").map((id) => Number(id.trim()));
   if (ids.some((id) => !Number.isSafeInteger(id))) {
-    throw new Error("ALLOWED_BOT_IDS must be a comma-separated list of Telegram user ids");
+    throw new Error("ALLOWED_BOT_IDS must be `*` or a comma-separated list of Telegram user ids");
   }
-  return new Set(ids);
+  const allowed = new Set(ids);
+  return (sender) => allowed.has(sender.id);
 }

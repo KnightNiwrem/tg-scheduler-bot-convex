@@ -23,6 +23,7 @@ const SCHEDULER = { id: 1000, is_bot: true, first_name: "Scheduler", username: "
 const CLIENT = { id: 2000, is_bot: true, first_name: "Client", username: "test_client_bot" };
 const BROKEN_CLIENT = { id: 3000, is_bot: true, first_name: "Broken", username: "broken_client_bot" };
 const RATE_LIMITED_CLIENT = { id: 5000, is_bot: true, first_name: "Busy", username: "busy_client_bot" };
+const HUMAN = { id: 6000, is_bot: false, first_name: "Human" };
 const STRANGER = { id: 4000, is_bot: true, first_name: "Stranger", username: "stranger_bot" };
 
 // --- Mock Telegram Bot API -------------------------------------------------
@@ -56,7 +57,8 @@ const now = () => Math.floor(Date.now() / 1000);
 
 // --- Helpers ----------------------------------------------------------------
 let updateId = 1;
-async function postUpdate(from: typeof CLIENT, text: string, secret = SECRET) {
+type Sender = { id: number; is_bot: boolean; first_name: string; username?: string };
+async function postUpdate(from: Sender, text: string, secret = SECRET) {
   const res = await fetch(`${siteUrl}/telegram/webhook`, {
     method: "POST",
     headers: { "content-type": "application/json", "X-Telegram-Bot-Api-Secret-Token": secret },
@@ -102,10 +104,10 @@ function assert(condition: unknown, message: string): asserts condition {
 // --- Test run ---------------------------------------------------------------
 console.log(`Configuring ${deployment} to use mock Bot API at ${mock.url}`);
 for (const [name, value] of Object.entries({
-  TELEGRAM_BOT_TOKEN: TOKEN,
-  TELEGRAM_WEBHOOK_SECRET: SECRET,
+  BOT_TOKEN: TOKEN,
+  BOT_WEBHOOK_SECRET: SECRET,
   ALLOWED_BOT_IDS: `${CLIENT.id},${BROKEN_CLIENT.id},${RATE_LIMITED_CLIENT.id}`,
-  TELEGRAM_API_ROOT: mock.url.origin,
+  BOT_API_ROOT: mock.url.origin,
 })) {
   await $`bunx convex env set ${name} ${value}`.quiet();
 }
@@ -187,6 +189,17 @@ try {
     assert(rateLimited, "the first attempt was not rate limited");
     const doc = await getSchedule(retriedTaskId);
     assert(doc?.status === "delivered" && doc.attempts === 2, `unexpected record: ${JSON.stringify(doc)}`);
+  });
+
+  await check("ALLOWED_BOT_IDS=* accepts any bot but not human users", async () => {
+    await $`bunx convex env set ALLOWED_BOT_IDS ${"*"}`.quiet(); // interpolated so the shell does not glob it
+    const strangerTaskId = crypto.randomUUID();
+    const later = new Date(Date.now() + 60_000).toISOString();
+    await postUpdate(STRANGER, `/schedule ${strangerTaskId} ${later}`);
+    await waitForSent((m) => m.chat_id === STRANGER.id && m.text.startsWith(`scheduled ${strangerTaskId}`));
+    await postUpdate(HUMAN, `/schedule ${crypto.randomUUID()} ${later}`);
+    await Bun.sleep(500);
+    assert(!sent.some((m) => m.chat_id === HUMAN.id), "replied to a human user");
   });
 } finally {
   mock.stop(true);
