@@ -42,9 +42,14 @@ const text = `/schedule ${taskId} ${runAt}`;
 await bot.api.sendMessage(`@${scheduler}`, text);
 console.log(`-> ${text}`);
 
-setTimeout(() => {
-  console.error(`No notification ${delaySeconds + 60}s after the request; check \`bun run status\` and the Convex logs.`);
-  process.exit(1);
-}, (delaySeconds + 60) * 1000).unref();
+setTimeout(
+  () => {
+    console.error(
+      `No notification ${delaySeconds + 60}s after the request; check \`bun run status\` and the Convex logs.`,
+    );
+    process.exit(1);
+  },
+  (delaySeconds + 60) * 1000,
+).unref();
 
 await bot.start({ allowed_updates: ["message"] });

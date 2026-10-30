@@ -63,11 +63,12 @@ const handlers: Record<Command, Handler> = {
     if (!parsed.ok) return formatError(parsed.code, parsed.detail);
     return await store(
       parsed.taskId,
-      () => ctx.runMutation(internal.schedules.create, {
-        clientId,
-        taskId: parsed.taskId,
-        runAt: parsed.runAt,
-      }),
+      () =>
+        ctx.runMutation(internal.schedules.create, {
+          clientId,
+          taskId: parsed.taskId,
+          runAt: parsed.runAt,
+        }),
       () => formatAck(parsed.taskId, parsed.runAt),
     );
   },
@@ -77,11 +78,12 @@ const handlers: Record<Command, Handler> = {
     if (!parsed.ok) return formatError(parsed.code, parsed.detail);
     return await store(
       parsed.taskId,
-      () => ctx.runMutation(internal.recurring.create, {
-        clientId,
-        taskId: parsed.taskId,
-        cronspec: parsed.cronspec,
-      }),
+      () =>
+        ctx.runMutation(internal.recurring.create, {
+          clientId,
+          taskId: parsed.taskId,
+          cronspec: parsed.cronspec,
+        }),
       () => formatCronAck(parsed.taskId, parsed.cronspec),
     );
   },
@@ -90,14 +92,20 @@ const handlers: Record<Command, Handler> = {
     const parsed = parseCancelRequest(text);
     if (!parsed.ok) return formatError(parsed.code, parsed.detail);
     try {
-      const result = await ctx.runMutation(internal.tasks.cancel, { clientId, taskId: parsed.taskId });
+      const result = await ctx.runMutation(internal.tasks.cancel, {
+        clientId,
+        taskId: parsed.taskId,
+      });
       switch (result.kind) {
         case "cancelled":
           return formatCancelled(parsed.taskId);
         case "not_found":
           return formatError("not_found", `no schedule for task ${parsed.taskId}`);
         case "not_cancellable":
-          return formatError("not_found", `task ${parsed.taskId} is no longer pending (${result.status})`);
+          return formatError(
+            "not_found",
+            `task ${parsed.taskId} is no longer pending (${result.status})`,
+          );
       }
     } catch (error) {
       console.error("Failed to cancel schedule:", error);

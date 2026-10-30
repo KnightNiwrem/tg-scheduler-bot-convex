@@ -68,8 +68,8 @@ export const markFailed = internalMutation({
   args: { recurringId: v.id("recurring"), error: v.string(), permanent: v.boolean() },
   handler: async (ctx, { recurringId, error, permanent }) => {
     const schedule = await ctx.db.get("recurring", recurringId);
-    if (!schedule || schedule.status !== "active") return;
-    if (permanent) await crons.delete(ctx, { id: schedule.cronId! });
+    if (schedule?.status !== "active") return;
+    if (permanent && schedule.cronId) await crons.delete(ctx, { id: schedule.cronId });
     await ctx.db.patch("recurring", recurringId, {
       status: permanent ? "failed" : "active",
       lastError: error.slice(0, 500),
@@ -87,7 +87,10 @@ export const fire = internalAction({
     try {
       await createApi().sendMessage(schedule.clientId, formatDue(schedule.taskId));
     } catch (error) {
-      console.error(`Recurring delivery of ${schedule.taskId} to ${schedule.clientId} failed:`, error);
+      console.error(
+        `Recurring delivery of ${schedule.taskId} to ${schedule.clientId} failed:`,
+        error,
+      );
       await ctx.runMutation(internal.recurring.markFailed, {
         recurringId,
         error: String(error),
