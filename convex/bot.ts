@@ -21,7 +21,15 @@ export async function createBot(ctx: ActionCtx) {
 
   const isAllowed = parseAllowlist(env("ALLOWED_BOT_IDS"));
 
-  bot.chatType("private").on("message:text", async (c) => {
+  // Log and acknowledge failed updates instead of returning an error to
+  // Telegram, which would redeliver the same update over and over. This has to
+  // be an error boundary: bot.catch() only applies to long polling, and with
+  // webhooks the error would escape webhookCallback as a 500.
+  const safe = bot.errorBoundary((err) => {
+    console.error(`Failed to handle update ${err.ctx.update.update_id}:`, err.error);
+  });
+
+  safe.chatType("private").on("message:text", async (c) => {
     // Unauthorized senders and anything that is not a /schedule request are
     // ignored without a reply, so the bot cannot be drawn into a reply loop.
     if (!isAllowed(c.from)) {
@@ -34,12 +42,6 @@ export async function createBot(ctx: ActionCtx) {
     await c.reply(reply, {
       reply_parameters: { message_id: c.msg.message_id, allow_sending_without_reply: true },
     });
-  });
-
-  // Log and acknowledge failed updates instead of returning an error to
-  // Telegram, which would redeliver the same update over and over.
-  bot.catch((err) => {
-    console.error(`Failed to handle update ${err.ctx.update.update_id}:`, err.error);
   });
 
   return bot;
