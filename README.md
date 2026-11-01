@@ -46,6 +46,11 @@ with a `type` field.
 
 - `runAt` must be ISO 8601 and must include an offset: `Z` or `±HH:MM`. Seconds and milliseconds
   are optional. The time must be in the future and no more than 366 days ahead.
+- Schedules have minute resolution. Seconds and milliseconds in `runAt` are dropped, so
+  `09:30:45.500Z` is scheduled for `09:30:00.000Z`. The ack, `scheduledFor` and `deliveryId` all use
+  the truncated time, and so do the duplicate and conflict checks: `09:30:15Z` and `09:30:45Z` are the
+  same schedule. The future-time check also applies after truncation, so a time later in the
+  current minute returns `time_in_past`.
 - `cron` is a standard five-field cron expression (`minute hour day-of-month month day-of-week`),
   evaluated in **UTC**. Ranges, steps, lists, names (`MON`, `JAN`), `L` and `#` are supported. A
   seconds field is not accepted, so a schedule runs at most once a minute. Aliases such as `@hourly`

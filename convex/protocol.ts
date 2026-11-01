@@ -34,7 +34,10 @@ export type ErrorCode =
   | "quota_exceeded"
   | "internal";
 
-/** A validated request. Ids are lowercased, times are epoch milliseconds, cron whitespace is normalized. */
+/**
+ * A validated request. Ids are lowercased, times are epoch milliseconds
+ * truncated to the minute, cron whitespace is normalized.
+ */
 export type Request =
   | { type: "schedule"; requestId: string; taskId: string; runAt: number }
   | { type: "cron"; requestId: string; taskId: string; cronspec: string }
@@ -122,8 +125,15 @@ function parseSchedule(ids: Ids, rawRunAt: unknown): ParseResult {
       "runAt must be ISO 8601 with an offset, e.g. 2026-11-01T09:30:00Z",
     );
   }
-  return { kind: "request", request: { type: "schedule", ...ids, runAt } };
+  return { kind: "request", request: { type: "schedule", ...ids, runAt: toMinute(runAt) } };
 }
+
+/**
+ * Drops the seconds and milliseconds of an epoch time. Schedules have minute
+ * resolution, like crons. UTC offsets are whole minutes, so this is the same
+ * minute in every timezone.
+ */
+const toMinute = (ms: number) => Math.floor(ms / 60_000) * 60_000;
 
 function parseCron(ids: Ids, rawCron: unknown): ParseResult {
   const cronspec = typeof rawCron === "string" ? normalizeCron(rawCron) : null;
