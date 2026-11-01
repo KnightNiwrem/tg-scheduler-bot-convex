@@ -138,7 +138,7 @@ two bots from [@BotFather](https://t.me/BotFather): the scheduler, and a client 
    bunx convex env set ALLOWED_BOT_IDS '<client bot id>,<another bot id>'
    ```
 
-   A bot's numeric id is the part of its token before the `:`. The demo client also prints it.
+   A bot's numeric id is the part of its token before the `:`.
    The allowlist is checked against the sender's Telegram user id. For a quick manual test you
    can add your own user id and send a request to the scheduler from your Telegram app.
    Set `ALLOWED_BOT_IDS='*'` to accept requests from any bot. Human users are still refused in
@@ -165,37 +165,14 @@ ran `setWebhook` last receives that bot's updates.
 
 ## Verifying
 
-**Against Telegram** (after setup):
-
 ```sh
-bun run status                                      # bot identity + webhook health (pending updates, last error)
-CLIENT_BOT_TOKEN='<client bot token>' SCHEDULER_BOT_USERNAME=your_scheduler_bot bun run demo-client
+bun run status   # bot identity + webhook health (pending updates, last error)
 ```
 
-The demo client schedules a task 30 seconds out (`DELAY_SECONDS` changes this), prints the ack, and
-exits with `Success` when the `due` notification arrives. It uses long polling, so stop any other process
-that uses the client bot first. The Convex dashboard shows each request in the `schedules` table.
-Pending runs appear in the Functions view as scheduled functions.
+The Convex dashboard shows each request in the `schedules` table. Pending runs appear in the
+Functions view as scheduled functions.
 
-**Locally, without Telegram:**
-
-```sh
-# terminal 1: a local Convex backend. Without a Convex account:
-CONVEX_AGENT_MODE=anonymous bunx convex dev
-# ...or with an existing project: bunx convex deployment select local && bunx convex dev
-
-# terminal 2
-bun run e2e:local
-```
-
-`e2e:local` starts a mock Bot API server, points the local deployment at it with `BOT_API_ROOT`,
-and posts webhook updates to the HTTP action. It checks secret validation, the allowlist, error
-replies, request replay and request id reuse, task-level idempotency, conflicts, on-time delivery, permanent failures, a rate-limit retry, recurring
-schedules (two runs on consecutive minute boundaries, cancel, quota, and stopping on a permanent
-error), and cancelling one-time schedules. The cron checks wait for real minute boundaries, so the
-run takes about three minutes. It overwrites the deployment's environment variables, so it refuses to run against non-local deployments.
-
-Other checks: `bun test` (protocol parsing and formatting), `bun run typecheck`, and `bun run check` (Biome lint and
+Checks: `bun test` (protocol parsing and formatting), `bun run typecheck`, and `bun run check` (Biome lint and
 format; `bun run check:fix` applies fixes). `bun run validate` runs all three, and so does CI.
 
 ## Configuration
