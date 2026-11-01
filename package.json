@@ -16,8 +16,6 @@
     "deploy": "convex deploy",
     "set-webhook": "convex run telegram:setWebhook",
     "status": "convex run telegram:status",
-    "demo-client": "bun scripts/demo-client.ts",
-    "e2e:local": "bun scripts/e2e-local.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit -p convex && tsc --noEmit",
     "check": "biome check",

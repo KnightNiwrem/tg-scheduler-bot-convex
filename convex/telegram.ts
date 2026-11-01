@@ -9,7 +9,7 @@ export function env(name: string): string {
   return value;
 }
 
-/** grammY client options. BOT_API_ROOT is optional (local Bot API server or the local e2e test). */
+/** grammY client options. BOT_API_ROOT is optional (e.g. a local Bot API server). */
 export function clientConfig() {
   const apiRoot = process.env.BOT_API_ROOT;
   return apiRoot ? { apiRoot } : undefined;
