@@ -35,6 +35,16 @@ describe("parseRequest", () => {
     });
   });
 
+  test("truncates schedule times to the minute", () => {
+    const runAt = (value: string) => {
+      const r = parseRequest(msg({ type: "schedule", requestId: REQ, taskId: TASK, runAt: value }));
+      return r.kind === "request" && r.request.type === "schedule" ? r.request.runAt : null;
+    };
+    expect(runAt("2026-01-01T00:05:59.999Z")).toBe(NOW + 5 * 60_000);
+    expect(runAt("2026-01-01T08:05:30+08:00")).toBe(NOW + 5 * 60_000);
+    expect(runAt("1969-12-31T23:59:30Z")).toBe(-60_000); // before the epoch, still rounds down
+  });
+
   test("parses a cron request and normalizes whitespace", () => {
     expect(
       parseRequest(
